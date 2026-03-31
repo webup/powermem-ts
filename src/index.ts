@@ -1,4 +1,5 @@
 export { Memory } from './memory.js';
+export { NativeProvider } from './provider/native/index.js';
 
 export type { MemoryProvider } from './provider/index.js';
 

@@ -2,231 +2,380 @@
 
 ## 1. Overview
 
-PowerMem TS SDK provides a native TypeScript interface for [PowerMem](https://github.com/oceanbase/powermem). It manages the Python-based PowerMem server as a subprocess, communicating via localhost HTTP. All implementation details (Python environment, server lifecycle, HTTP protocol) are transparent to the user.
+PowerMem TS SDK is a pure TypeScript memory system for AI agents. It stores, retrieves, and semantically searches memories using vector embeddings, with optional LLM-driven intelligent memory extraction.
 
-The SDK is designed with a **provider abstraction** — the current implementation uses HTTP, but can be replaced with a native TS implementation in the future without changing the public API.
+The SDK operates in two modes:
 
-## 2. Architecture layers
+- **Native mode** (default): Pure TypeScript — SQLite storage, LangChain.js for embeddings/LLM, cosine similarity search. Zero Python dependency.
+- **HTTP mode** (`serverUrl`): Connects to an existing powermem-server via HTTP. Retained for backward compatibility.
+
+## 2. Core design concept
+
+### Provider abstraction
+
+The SDK is built around a single architectural idea: **the `MemoryProvider` interface decouples the public API from the implementation**.
 
 ```
 ┌──────────────────────────────────────────┐
-│           Memory (Facade)                │  ← User-facing entry point
-│  - init() / create() / close()           │
+│           Memory (Facade)                │  ← User-facing, never changes
+│  - create() / close()                   │
 │  - add / search / get / update / ...     │
 ├──────────────────────────────────────────┤
-│        MemoryProvider (interface)         │  ← Abstract contract
+│        MemoryProvider (interface)         │  ← The contract
 ├──────────────────┬───────────────────────┤
-│   HttpProvider   │  (Future)             │
-│   Current impl   │  NativeProvider       │
-│   via localhost   │  Pure TS impl        │
-├──────────────────┴───────────────────────┤
-│        ServerManager                     │  ← Server subprocess lifecycle
-│  - spawn / health check / shutdown       │
-├──────────────────────────────────────────┤
-│        PythonEnvManager                  │  ← Python environment management
-│  - detect Python / create venv / install │
-├──────────────────────────────────────────┤
-│        Utils                             │  ← Cross-platform helpers
-│  - platform / case-convert / env loader  │
-└──────────────────────────────────────────┘
+│  NativeProvider  │    HttpProvider       │
+│  Default         │    Backward compat    │
+│  Pure TS         │    Remote server      │
+└──────────────────┴───────────────────────┘
 ```
 
-## 3. Project structure
+`Memory.create()` inspects options and picks the right provider. User code never references a provider directly. This made it possible to replace the entire Python backend with native TypeScript without changing a single line of user-facing API.
+
+### Pluggable LLM/Embedding via LangChain.js
+
+Rather than hardcoding API clients for each provider (OpenAI, Qwen, Anthropic, etc.), the SDK accepts LangChain.js base types:
+
+- `Embeddings` from `@langchain/core/embeddings`
+- `BaseChatModel` from `@langchain/core/language_models/chat_models`
+
+Users plug in any LangChain-compatible provider. The SDK also auto-creates instances from `.env` configuration for zero-config usage.
+
+### Faithful port of Python powermem
+
+The NativeProvider is a direct port of the [oceanbase/powermem](https://github.com/oceanbase/powermem) Python implementation. Key behaviors preserved exactly:
+
+- **Two-step intelligent add** (`infer=true`): extract facts via LLM → search for similar existing memories → ask LLM to decide ADD/UPDATE/DELETE/NONE → execute actions
+- **Same LLM prompts**: `FACT_RETRIEVAL_PROMPT` and `DEFAULT_UPDATE_MEMORY_PROMPT` copied verbatim
+- **Snowflake IDs**: 64-bit IDs matching Python's SnowflakeIDGenerator, serialized as strings
+- **Cosine similarity**: Same algorithm, brute-force over filtered records
+- **SQLite storage**: Same schema pattern (id, vector as JSON, payload as JSON)
+- **MD5 content hashing** for deduplication
+- **Access control**: userId/agentId check on get operations
+
+## 3. Architecture layers — NativeProvider
+
+```
+NativeProvider
+  │
+  ├── Embedder              Wraps LangChain Embeddings
+  │     └── embedQuery / embedDocuments
+  │
+  ├── Inferrer              Two-step LLM memory extraction
+  │     ├── extractFacts()    → FACT_RETRIEVAL_PROMPT → ["fact1", "fact2"]
+  │     └── decideActions()   → UPDATE_MEMORY_PROMPT  → ADD/UPDATE/DELETE/NONE
+  │
+  ├── MemoryStore           SQLite via better-sqlite3
+  │     ├── insert / getById / update / remove
+  │     ├── list (filtered, paginated)
+  │     └── search (load vectors → cosine similarity → rank)
+  │
+  ├── SnowflakeIDGenerator  64-bit monotonic IDs (BigInt → string)
+  │
+  └── cosineSimilarity()    Pure math, no dependencies
+```
+
+## 4. Project structure
 
 ```
 powermem-ts/
 ├── package.json
 ├── tsconfig.json
-├── tsconfig.build.json
 ├── tsup.config.ts
+├── vitest.config.ts
 ├── .env.example
 ├── src/
-│   ├── index.ts              # Public exports
-│   ├── memory.ts             # Memory Facade
-│   ├── types/                # TypeScript type definitions
-│   │   ├── index.ts          #   Re-exports
-│   │   ├── memory.ts         #   MemoryRecord, AddParams, SearchParams, etc.
-│   │   ├── options.ts        #   MemoryOptions, InitOptions
-│   │   └── responses.ts      #   AddResult, SearchResult, etc.
-│   ├── errors/               # Error class hierarchy
-│   │   └── index.ts
-│   ├── provider/             # Provider abstraction
-│   │   ├── index.ts          #   MemoryProvider interface
-│   │   └── http-provider.ts  #   HTTP implementation
-│   ├── server/               # Server & Python env management
-│   │   ├── python-env.ts     #   PythonEnvManager
-│   │   └── server-manager.ts #   ServerManager
-│   └── utils/                # Shared utilities
-│       ├── platform.ts       #   Cross-platform path helpers
-│       ├── case-convert.ts   #   camelCase <-> snake_case
-│       └── env.ts            #   .env file loader
+│   ├── index.ts                    # Public exports
+│   ├── memory.ts                   # Memory facade
+│   ├── types/
+│   │   ├── index.ts                #   Re-exports
+│   │   ├── memory.ts               #   MemoryRecord, AddParams, SearchParams, etc.
+│   │   ├── options.ts              #   MemoryOptions (embeddings, llm, dbPath, serverUrl)
+│   │   └── responses.ts            #   AddResult, SearchResult, etc.
+│   ├── errors/
+│   │   └── index.ts                # PowerMemError hierarchy
+│   ├── provider/
+│   │   ├── index.ts                # MemoryProvider interface
+│   │   ├── http-provider.ts        # HTTP implementation (backward compat)
+│   │   └── native/
+│   │       ├── index.ts            # NativeProvider (main class)
+│   │       ├── store.ts            # SQLite storage layer
+│   │       ├── embedder.ts         # LangChain Embeddings wrapper
+│   │       ├── inferrer.ts         # LLM fact extraction + action decision
+│   │       ├── prompts.ts          # LLM prompt templates (from Python)
+│   │       ├── search.ts           # Cosine similarity
+│   │       ├── snowflake.ts        # Snowflake ID generator
+│   │       └── provider-factory.ts # Env-based auto-creation
+│   ├── server/                     # (Legacy) Python server management
+│   │   ├── python-env.ts
+│   │   └── server-manager.ts
+│   └── utils/
+│       ├── platform.ts             # Cross-platform path helpers
+│       ├── case-convert.ts         # camelCase ↔ snake_case
+│       └── env.ts                  # .env file loader
+├── tests/
+│   ├── mocks.ts                    # MockEmbeddings, MockLLM
+│   ├── snowflake.test.ts
+│   ├── search.test.ts
+│   ├── store.test.ts
+│   ├── embedder.test.ts
+│   ├── inferrer.test.ts
+│   ├── native-provider.test.ts
+│   ├── memory-facade.test.ts
+│   ├── provider-factory.test.ts
+│   └── coverage-gaps.test.ts
 └── examples/
-    ├── basic-usage.ts
-    └── with-existing-server.ts
+    └── basic-usage.ts
 ```
 
-Runtime-managed directory (auto-created on user's machine):
+Runtime data directory (auto-created):
 
 ```
 ~/.powermem/
-├── venv/                     # Python virtualenv (created by init)
-│   └── bin/powermem-server   # Installed with powermem package
-└── init.lock                 # Concurrency lock (removed after init)
+└── memories.db               # SQLite database (NativeProvider)
 ```
 
-## 4. Key flows
+## 5. Key flows
 
-### 4.1 Initialization (`Memory.init()`)
-
-```
-Memory.init(options?)
-  │
-  ├─ Check ~/.powermem/venv/ exists?
-  │   ├─ Yes → Check powermem installed? (pip show powermem)
-  │   │         ├─ Installed → Skip, done ✓
-  │   │         └─ Not installed → Go to step 3
-  │   └─ No → Continue
-  │
-  ├─ Detect system Python
-  │   ├─ Try: options.pythonPath → python3 → python
-  │   ├─ Require version >= 3.11
-  │   │   └─ Not found → throw PowerMemInitError
-  │   └─ Create venv: python -m venv ~/.powermem/venv
-  │
-  ├─ Install powermem
-  │   └─ pip install <powermemVersion> [pipArgs]
-  │
-  └─ Verify: powermem-server binary exists?
-      ├─ Yes → Done ✓
-      └─ No → throw PowerMemInitError
-```
-
-Idempotent — safe to call multiple times:
-
-| Scenario | Behavior |
-|----------|----------|
-| First init | Create venv → pip install → verify |
-| Already installed | Detect and skip |
-| venv exists, powermem missing | Skip venv creation → pip install |
-| Corrupted venv | Remove and recreate |
-| `create()` without prior `init()` | Auto-triggers `init()` |
-
-### 4.2 Instance creation (`Memory.create()`)
+### 5.1 Instance creation (`Memory.create()`)
 
 ```
 Memory.create(options?)
   │
-  ├─ Has serverUrl?
-  │   ├─ Yes → Direct connect mode (skip all auto-start)
-  │   └─ No → Auto-start mode
-  │
   ├─ Load .env file
   │
-  ├─ Check init completed?
-  │   └─ No → Auto-call Memory.init()
+  ├─ Has serverUrl?
+  │   ├─ Yes → HttpProvider (backward compat)
+  │   └─ No  → NativeProvider (default)
   │
-  ├─ Health check http://127.0.0.1:{port}
-  │   ├─ Pass → Server already running, reuse
-  │   └─ Fail → Spawn: powermem-server --host 127.0.0.1 --port {port}
+  └─ NativeProvider.create():
+      ├─ Resolve dbPath (default ~/.powermem/memories.db)
+      ├─ Create SQLite database (MemoryStore)
+      ├─ Set up Embedder:
+      │   ├─ options.embeddings provided? → Use it
+      │   └─ Not provided → createEmbeddingsFromEnv()
+      ├─ Set up Inferrer (optional):
+      │   ├─ options.llm provided? → Use it
+      │   ├─ Not provided → try createLLMFromEnv()
+      │   └─ No LLM config → inferrer = undefined (infer disabled)
+      └─ Return NativeProvider instance
+```
+
+### 5.2 Simple add (`infer=false`)
+
+```
+add({ content, userId, ... , infer: false })
   │
-  ├─ Poll GET /api/v1/system/health (500ms interval)
-  │   ├─ Pass → Server ready
-  │   └─ Timeout → throw PowerMemStartupError
+  ├─ Generate Snowflake ID
+  ├─ Embed content → vector
+  ├─ MD5 hash content
+  ├─ Store in SQLite: { id, vector, payload }
+  └─ Return AddResult with 1 MemoryRecord
+```
+
+### 5.3 Intelligent add (`infer=true`, default)
+
+```
+add({ content, userId, ... })
   │
-  └─ Create HttpProvider → Return Memory instance
+  ├─ Step 1: Extract facts
+  │   └─ LLM(FACT_RETRIEVAL_PROMPT, content) → ["fact1", "fact2", ...]
+  │
+  ├─ Step 2: Find similar existing memories
+  │   └─ For each fact:
+  │       ├─ Embed fact → vector
+  │       └─ Search SQLite for top-5 similar (filtered by userId/agentId/runId)
+  │   └─ Deduplicate, keep best scores, max 10 candidates
+  │
+  ├─ Step 3: Map IDs
+  │   └─ Real Snowflake IDs → temp sequential IDs ("0","1","2"...)
+  │       (prevents LLM from hallucinating IDs)
+  │
+  ├─ Step 4: Decide actions
+  │   └─ LLM(UPDATE_MEMORY_PROMPT, existing_memories, new_facts)
+  │       → [{ id, text, event: ADD|UPDATE|DELETE|NONE }]
+  │
+  └─ Step 5: Execute actions
+      ├─ ADD    → new Snowflake ID, embed, store
+      ├─ UPDATE → map temp→real ID, embed new text, update store
+      ├─ DELETE → map temp→real ID, remove from store
+      └─ NONE   → skip (duplicate)
 ```
 
-### 4.3 Two modes of operation
-
-**Auto-start mode** (default): SDK manages the full lifecycle — Python env, server process, HTTP communication.
+### 5.4 Search
 
 ```
-User code → Memory Facade → HttpProvider → localhost HTTP → powermem-server (subprocess)
+search({ query, userId, limit })
+  │
+  ├─ Embed query → vector
+  ├─ Load all matching records from SQLite (filtered by userId/agentId/runId)
+  ├─ Compute cosine similarity for each
+  ├─ Sort descending by score
+  ├─ Return top-k as SearchResult
+  └─ Each result: { memoryId, content, score, metadata }
 ```
 
-**Direct connect mode** (`serverUrl` provided): SDK only handles HTTP communication, no subprocess management.
+## 6. Storage — SQLite schema
 
+```sql
+CREATE TABLE memories (
+  id TEXT PRIMARY KEY,          -- Snowflake ID as string
+  vector TEXT,                  -- JSON array of floats
+  payload TEXT,                 -- JSON blob (see below)
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 ```
-User code → Memory Facade → HttpProvider → remote/existing server
+
+Payload JSON structure:
+```json
+{
+  "data": "the actual content text",
+  "user_id": "user123",
+  "agent_id": "agent1",
+  "run_id": "run1",
+  "hash": "md5-hex-of-content",
+  "created_at": "2024-01-01T00:00:00.000Z",
+  "updated_at": "2024-01-01T00:00:00.000Z",
+  "category": null,
+  "metadata": { "custom": "user metadata" }
+}
 ```
 
-## 5. Communication protocol
+Filtering uses `json_extract()` on the payload column. Vector search is brute-force cosine similarity in JavaScript — efficient for datasets up to ~100K records.
 
+## 7. Dependencies
+
+**Runtime:**
+- `better-sqlite3` — Synchronous SQLite bindings (native addon)
+- `@langchain/core` — Base types for Embeddings and LLM
+- `dotenv` — .env file loading
+
+**Peer (user installs what they need):**
+- `@langchain/openai` — OpenAI, Qwen, SiliconFlow, DeepSeek (OpenAI-compatible)
+- `@langchain/anthropic` — Anthropic Claude
+- `@langchain/ollama` — Local Ollama models
+
+**Dev:**
+- `typescript`, `tsup`, `vitest`, `@vitest/coverage-v8`, `@types/better-sqlite3`
+
+## 8. Configuration
+
+Two ways to configure embeddings/LLM:
+
+**Explicit (recommended for libraries):**
+```ts
+import { ChatOpenAI, OpenAIEmbeddings } from '@langchain/openai';
+
+const memory = await Memory.create({
+  embeddings: new OpenAIEmbeddings({ model: 'text-embedding-3-small' }),
+  llm: new ChatOpenAI({ model: 'gpt-4o-mini' }),
+});
 ```
-TS SDK ──HTTP (127.0.0.1:19527)──> powermem-server (uvicorn)
+
+**Env-based (zero-config):**
+```bash
+# .env
+EMBEDDING_PROVIDER=openai
+EMBEDDING_API_KEY=sk-...
+EMBEDDING_MODEL=text-embedding-3-small
+LLM_PROVIDER=openai
+LLM_API_KEY=sk-...
+LLM_MODEL=gpt-4o-mini
+```
+```ts
+const memory = await Memory.create(); // reads from .env
 ```
 
-- Default port: `19527` (configurable via `MemoryOptions.port`)
-- Listens on `127.0.0.1` only (not externally accessible)
-- Auth disabled internally (`POWERMEM_SERVER_AUTH_ENABLED=false`)
-- Uses Node.js 18+ built-in `fetch` (zero network dependencies)
+Supported providers for env-based auto-creation:
 
-### API endpoint mapping
+| Provider | Embedding | LLM | Package |
+|----------|-----------|-----|---------|
+| `openai` | Yes | Yes | `@langchain/openai` |
+| `qwen` | Yes | Yes | `@langchain/openai` |
+| `siliconflow` | Yes | Yes | `@langchain/openai` |
+| `deepseek` | Yes | Yes | `@langchain/openai` |
+| `anthropic` | No | Yes | `@langchain/anthropic` |
+| `ollama` | Yes | Yes | `@langchain/ollama` |
 
-| SDK method | HTTP | Endpoint |
-|------------|------|----------|
-| `add()` | POST | `/api/v1/memories` |
-| `search()` | POST | `/api/v1/memories/search` |
-| `get(id)` | GET | `/api/v1/memories/{id}` |
-| `update(id)` | PUT | `/api/v1/memories/{id}` |
-| `delete(id)` | DELETE | `/api/v1/memories/{id}` |
-| `getAll()` | GET | `/api/v1/memories` |
-| `addBatch()` | POST | `/api/v1/memories/batch` |
-| `deleteAll()` | DELETE | `/api/v1/memories` |
-
-### Field name convention
-
-Python/HTTP uses `snake_case`, TypeScript uses `camelCase`. Bidirectional conversion happens in the `HttpProvider` layer:
-
-| TypeScript | HTTP/Python |
-|------------|-------------|
-| `userId` | `user_id` |
-| `agentId` | `agent_id` |
-| `memoryId` | `memory_id` |
-| `createdAt` | `created_at` |
-| `updatedAt` | `updated_at` |
-
-## 6. Process management
-
-| Scenario | Behavior |
-|----------|----------|
-| `create()`: server already running | Reuse; `close()` does **not** kill it |
-| `create()`: server not running | Spawn subprocess; `close()` kills it |
-| Node.js process exits | Registered `process.on('exit')` ensures subprocess cleanup |
-| Multiple Memory instances | Share a single `ServerManager` per port |
-
-## 7. Error hierarchy
+## 9. Error hierarchy
 
 | Error class | Code | Trigger |
 |-------------|------|---------|
 | `PowerMemError` | (base) | Base class for all SDK errors |
-| `PowerMemInitError` | `INIT_ERROR` | Python not found, venv creation failed, pip install failed |
-| `PowerMemStartupError` | `STARTUP_ERROR` | Server did not become ready within timeout |
-| `PowerMemConnectionError` | `CONNECTION_ERROR` | Cannot reach the server (network/fetch error) |
-| `PowerMemAPIError` | `API_ERROR` | Server returned a non-success response |
+| `PowerMemInitError` | `INIT_ERROR` | Missing env config, LangChain package not installed |
+| `PowerMemStartupError` | `STARTUP_ERROR` | Server timeout (HTTP mode only) |
+| `PowerMemConnectionError` | `CONNECTION_ERROR` | Cannot reach server (HTTP mode only) |
+| `PowerMemAPIError` | `API_ERROR` | Server error response (HTTP mode only) |
 
-## 8. Build output
+## 10. Build output
 
-Dual-format output via `tsup` (esbuild-based):
+Dual-format via `tsup`:
 
 | File | Format | Purpose |
 |------|--------|---------|
-| `dist/index.js` | CommonJS | `require('powermem-ts')` |
-| `dist/index.mjs` | ESM | `import from 'powermem-ts'` |
+| `dist/index.js` | ESM | `import from 'powermem-ts'` |
+| `dist/index.cjs` | CommonJS | `require('powermem-ts')` |
 | `dist/index.d.ts` | TypeScript declarations | Type support |
 
-## 9. Dependencies
+`better-sqlite3` and `@langchain/*` are externalized (not bundled).
 
-**Runtime**: `dotenv` (`.env` loading). HTTP via Node.js built-in `fetch`, subprocess via built-in `child_process`.
+## 11. Test architecture
 
-**Dev**: `typescript`, `tsup`, `eslint`, `@types/node`.
+113 tests total: **95 unit tests** (mocked, fast) + **18 e2e tests** (real Ollama models).
 
-## 10. Future evolution
+### Unit tests
 
-| Phase | Change | User impact |
-|-------|--------|-------------|
-| Current | HttpProvider + auto-managed server | — |
-| Mid-term | NativeProvider (partial native TS) | None — swap provider internally |
-| Long-term | Full native TS, remove Python dependency | None — remove ServerManager |
+9 files using **vitest** with mock LangChain instances:
 
-The `MemoryProvider` interface ensures the transition is transparent. `Memory.create()` selects the provider internally; user-facing API remains unchanged.
+- `MockEmbeddings` — Deterministic vectors from character frequency (no API calls)
+- `MockLLM` — Pre-configured response queue with call tracking
+
+Coverage: **95% lines, 83% branches, 98.5% functions**.
+
+| Test file | Tests | Layer |
+|-----------|-------|-------|
+| `snowflake.test.ts` | 4 | ID generation |
+| `search.test.ts` | 6 | Cosine similarity |
+| `store.test.ts` | 14 | SQLite CRUD + vector search |
+| `embedder.test.ts` | 4 | Embedding wrapper |
+| `inferrer.test.ts` | 9 | LLM fact extraction + actions |
+| `native-provider.test.ts` | 28 | Full integration |
+| `memory-facade.test.ts` | 7 | Public API end-to-end |
+| `provider-factory.test.ts` | 9 | Env-based factory |
+| `coverage-gaps.test.ts` | 14 | Edge cases + filter branches |
+
+### E2E tests with real models
+
+`e2e-ollama.test.ts` — 18 tests using local Ollama models:
+- **LLM**: `qwen2.5:0.5b` (397 MB) — fact extraction + memory action decisions
+- **Embedding**: `nomic-embed-text` (274 MB, 768-dim vectors)
+
+Auto-skipped when Ollama is not available.
+
+| Test | Design purpose verified |
+|------|------------------------|
+| Embedding produces vectors | Real model returns valid number arrays |
+| Similar texts → similar vectors | Semantic similarity works (coffee > weather) |
+| Add + retrieve | SQLite storage round-trip with real embeddings |
+| Semantic search ranks correctly | Coffee memories ranked top for "coffee preferences" |
+| Search limit respected | Limit=2 returns ≤2 results |
+| userId filter isolation | Filtered search returns only matching user |
+| Infer: fact extraction | Real LLM extracts facts → embeds → stores |
+| Infer: trivial input | "Hi." doesn't crash, returns gracefully |
+| Infer: UPDATE existing | Enhanced info updates pre-existing memory |
+| Full CRUD lifecycle | add → search → update → re-search → delete |
+| Batch add + searchable | 3 items batched, all semantically findable |
+| deleteAll | Clears filtered user's memories |
+| Multi-user isolation | Same store, user A cannot see user B's data |
+| agentId filter | getAll and search filter by agentId |
+| Pagination | limit/offset returns correct pages with no overlap |
+| Metadata round-trip | Custom metadata stored and retrieved correctly |
+| Metadata survives update | Metadata preserved when content changes |
+| reset() | Clears all memories |
+
+### Running tests
+
+```bash
+npm test          # Unit tests only (fast, no external deps)
+npm run test:e2e  # E2E tests (requires Ollama + models)
+npm run test:all  # Both
+```

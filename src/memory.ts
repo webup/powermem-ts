@@ -1,6 +1,5 @@
-import { PythonEnvManager } from './server/python-env.js';
-import { ServerManager } from './server/server-manager.js';
 import { HttpProvider } from './provider/http-provider.js';
+import { NativeProvider } from './provider/native/index.js';
 import { loadEnvFile } from './utils/env.js';
 import type { MemoryProvider } from './provider/index.js';
 import type { InitOptions, MemoryOptions } from './types/options.js';
@@ -16,55 +15,40 @@ import type {
 } from './types/memory.js';
 import type { AddResult, SearchResult, MemoryListResult } from './types/responses.js';
 
-// 按端口缓存 ServerManager 单例（多个 Memory 实例共享同一个 server）
-const serverManagers = new Map<number, ServerManager>();
-
 export class Memory {
   private constructor(
     private readonly provider: MemoryProvider,
-    private readonly serverManager?: ServerManager
   ) {}
 
   /**
-   * 一次性初始化：检测/安装 Python 环境 + powermem 包。
-   * 幂等操作，重复调用会跳过已完成的步骤。
+   * No-op — retained for backward compatibility.
+   * Python environment is no longer needed with the native provider.
    */
-  static async init(options: InitOptions = {}): Promise<void> {
-    const envMgr = new PythonEnvManager(options.homeDir);
-    await envMgr.setup(options);
+  static async init(_options: InitOptions = {}): Promise<void> {
+    // No-op: NativeProvider does not require Python setup.
   }
 
   /**
-   * 创建 Memory 实例，自动启动内部 powermem-server。
-   * 如果未 init()，会自动先执行 init()。
+   * Create a Memory instance.
+   * - With `serverUrl`: connects to an existing powermem-server via HTTP.
+   * - Without `serverUrl` (default): uses pure-TS NativeProvider with SQLite.
    */
   static async create(options: MemoryOptions = {}): Promise<Memory> {
     loadEnvFile(options.envFile ?? '.env');
 
-    // 直连模式：跳过一切自动启动逻辑
+    // Direct connect mode: HttpProvider (backward compat)
     if (options.serverUrl) {
       const provider = new HttpProvider(options.serverUrl, options.apiKey);
       return new Memory(provider);
     }
 
-    const port = options.port ?? 19527;
-    const envMgr = new PythonEnvManager(options.init?.homeDir);
-
-    // 自动 init（幂等，已就绪则立即返回）
-    if (!(await envMgr.isReady())) {
-      await envMgr.setup(options.init ?? {});
-    }
-
-    // 按 port 复用 ServerManager 单例
-    let serverMgr = serverManagers.get(port);
-    if (!serverMgr) {
-      serverMgr = new ServerManager(port);
-      serverManagers.set(port, serverMgr);
-    }
-
-    const baseUrl = await serverMgr.ensureRunning(envMgr, options);
-    const provider = new HttpProvider(baseUrl, options.apiKey);
-    return new Memory(provider, serverMgr);
+    // Native mode (default): pure TypeScript
+    const provider = await NativeProvider.create({
+      embeddings: options.embeddings,
+      llm: options.llm,
+      dbPath: options.dbPath,
+    });
+    return new Memory(provider);
   }
 
   // ─── Public API ───────────────────────────────────────────────────────────
@@ -112,9 +96,7 @@ export class Memory {
     return this.provider.reset();
   }
 
-  /** 释放资源，如果 server 由本 SDK 启动则将其 kill */
   async close(): Promise<void> {
     await this.provider.close();
-    await this.serverManager?.shutdown();
   }
 }
