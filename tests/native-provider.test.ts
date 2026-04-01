@@ -393,4 +393,164 @@ describe('NativeProvider', () => {
       expect(result.total).toBe(0);
     });
   });
+
+  // ── New features ──────────────────────────────────────────────────────
+
+  describe('count', () => {
+    beforeEach(async () => {
+      provider = await createProvider();
+    });
+
+    it('returns total count', async () => {
+      await provider.add({ content: 'a', infer: false });
+      await provider.add({ content: 'b', infer: false });
+      expect(await provider.count()).toBe(2);
+    });
+
+    it('filters by userId', async () => {
+      await provider.add({ content: 'a', userId: 'alice', infer: false });
+      await provider.add({ content: 'b', userId: 'bob', infer: false });
+      expect(await provider.count({ userId: 'alice' })).toBe(1);
+    });
+  });
+
+  describe('scope and category', () => {
+    beforeEach(async () => {
+      provider = await createProvider();
+    });
+
+    it('stores scope and category on add', async () => {
+      const result = await provider.add({
+        content: 'test', scope: 'personal', category: 'preference', infer: false,
+      });
+      const mem = await provider.get(result.memories[0].id);
+      expect(mem!.scope).toBe('personal');
+      expect(mem!.category).toBe('preference');
+    });
+
+    it('addBatch propagates scope from options', async () => {
+      const result = await provider.addBatch(
+        [{ content: 'a' }, { content: 'b', scope: 'override' }],
+        { scope: 'default', infer: false }
+      );
+      const a = await provider.get(result.memories[0].id);
+      const b = await provider.get(result.memories[1].id);
+      expect(a!.scope).toBe('default');
+      expect(b!.scope).toBe('override');
+    });
+  });
+
+  describe('search threshold', () => {
+    beforeEach(async () => {
+      provider = await createProvider();
+    });
+
+    it('filters results below threshold', async () => {
+      await provider.add({ content: 'alpha', infer: false });
+      await provider.add({ content: 'beta', infer: false });
+
+      // Very high threshold should filter out most results
+      const result = await provider.search({ query: 'alpha', threshold: 0.999 });
+      // Only exact or near-exact matches should survive
+      for (const hit of result.results) {
+        expect(hit.score!).toBeGreaterThanOrEqual(0.999);
+      }
+    });
+  });
+
+  describe('getAll sorting', () => {
+    beforeEach(async () => {
+      provider = await createProvider();
+    });
+
+    it('sorts by created_at asc', async () => {
+      await provider.add({ content: 'first', infer: false });
+      await new Promise((r) => setTimeout(r, 10));
+      await provider.add({ content: 'second', infer: false });
+
+      const result = await provider.getAll({ sortBy: 'created_at', order: 'asc' });
+      expect(result.memories[0].content).toBe('first');
+      expect(result.memories[1].content).toBe('second');
+    });
+  });
+
+  describe('fallbackToSimpleAdd', () => {
+    it('falls back to simple add when infer produces no facts', async () => {
+      const emptyFactsLlm = new MockLLM([JSON.stringify({ facts: [] })]);
+      provider = await NativeProvider.create({
+        embeddings: new MockEmbeddings(),
+        llm: emptyFactsLlm,
+        dbPath: ':memory:',
+        fallbackToSimpleAdd: true,
+      });
+
+      const result = await provider.add({ content: 'test fallback' });
+      expect(result.memories).toHaveLength(1);
+      expect(result.memories[0].content).toBe('test fallback');
+    });
+  });
+
+  describe('reranker', () => {
+    it('applies reranker to search results', async () => {
+      const reverseReranker = async (_q: string, hits: any[]) => [...hits].reverse();
+
+      provider = await NativeProvider.create({
+        embeddings: new MockEmbeddings(),
+        dbPath: ':memory:',
+        reranker: reverseReranker,
+      });
+
+      await provider.add({ content: 'aaa', infer: false });
+      await provider.add({ content: 'bbb', infer: false });
+
+      const result = await provider.search({ query: 'aaa' });
+      // Without reranker, 'aaa' would be first. With reverse, it should be last.
+      expect(result.results.length).toBe(2);
+      expect(result.results[result.results.length - 1].content).toBe('aaa');
+    });
+  });
+
+  describe('access count', () => {
+    beforeEach(async () => {
+      provider = await createProvider();
+    });
+
+    it('increments on get', async () => {
+      const res = await provider.add({ content: 'tracked', infer: false });
+      const id = res.memories[0].id;
+
+      await provider.get(id);
+      await provider.get(id);
+      const mem = await provider.get(id);
+      // 3 gets total (including the one that reads the value)
+      expect(mem!.accessCount).toBeGreaterThanOrEqual(2);
+    });
+
+    it('increments on search', async () => {
+      const res = await provider.add({ content: 'searchable', infer: false });
+      const id = res.memories[0].id;
+
+      await provider.search({ query: 'searchable' });
+
+      const mem = await provider.get(id);
+      // search incremented + get incremented
+      expect(mem!.accessCount).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('decay', () => {
+    it('enableDecay adjusts search scores', async () => {
+      provider = await NativeProvider.create({
+        embeddings: new MockEmbeddings(),
+        dbPath: ':memory:',
+        enableDecay: true,
+        decayWeight: 0.5,
+      });
+
+      await provider.add({ content: 'test decay', infer: false });
+      const result = await provider.search({ query: 'test decay' });
+      // Score should still be positive
+      expect(result.results[0].score!).toBeGreaterThan(0);
+    });
+  });
 });

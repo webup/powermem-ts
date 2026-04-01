@@ -20,47 +20,36 @@ export class Memory {
     private readonly provider: MemoryProvider,
   ) {}
 
-  /**
-   * No-op — retained for backward compatibility.
-   * Python environment is no longer needed with the native provider.
-   */
-  static async init(_options: InitOptions = {}): Promise<void> {
-    // No-op: NativeProvider does not require Python setup.
-  }
+  /** No-op — retained for backward compatibility. */
+  static async init(_options: InitOptions = {}): Promise<void> {}
 
-  /**
-   * Create a Memory instance.
-   * - With `serverUrl`: connects to an existing powermem-server via HTTP.
-   * - Without `serverUrl` (default): uses pure-TS NativeProvider with SQLite.
-   */
   static async create(options: MemoryOptions = {}): Promise<Memory> {
     loadEnvFile(options.envFile ?? '.env');
 
-    // Direct connect mode: HttpProvider (backward compat)
     if (options.serverUrl) {
       const provider = new HttpProvider(options.serverUrl, options.apiKey);
       return new Memory(provider);
     }
 
-    // Native mode (default): pure TypeScript
     const provider = await NativeProvider.create({
       embeddings: options.embeddings,
       llm: options.llm,
       dbPath: options.dbPath,
+      customFactExtractionPrompt: options.customFactExtractionPrompt,
+      customUpdateMemoryPrompt: options.customUpdateMemoryPrompt,
+      fallbackToSimpleAdd: options.fallbackToSimpleAdd,
+      reranker: options.reranker,
+      enableDecay: options.enableDecay,
+      decayWeight: options.decayWeight,
     });
     return new Memory(provider);
   }
-
-  // ─── Public API ───────────────────────────────────────────────────────────
 
   async add(content: string, options: Omit<AddParams, 'content'> = {}): Promise<AddResult> {
     return this.provider.add({ content, ...options });
   }
 
-  async search(
-    query: string,
-    options: Omit<SearchParams, 'query'> = {}
-  ): Promise<SearchResult> {
+  async search(query: string, options: Omit<SearchParams, 'query'> = {}): Promise<SearchResult> {
     return this.provider.search({ query, ...options });
   }
 
@@ -68,11 +57,7 @@ export class Memory {
     return this.provider.get(memoryId);
   }
 
-  async update(
-    memoryId: string,
-    content: string,
-    options: Omit<UpdateParams, 'content'> = {}
-  ): Promise<MemoryRecord> {
+  async update(memoryId: string, content: string, options: Omit<UpdateParams, 'content'> = {}): Promise<MemoryRecord> {
     return this.provider.update(memoryId, { content, ...options });
   }
 
@@ -82,6 +67,10 @@ export class Memory {
 
   async getAll(options: GetAllParams = {}): Promise<MemoryListResult> {
     return this.provider.getAll(options);
+  }
+
+  async count(options: FilterParams = {}): Promise<number> {
+    return this.provider.count(options);
   }
 
   async addBatch(memories: BatchItem[], options: BatchOptions = {}): Promise<AddResult> {

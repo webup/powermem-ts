@@ -1,33 +1,23 @@
 import Database from 'better-sqlite3';
 import { cosineSimilarity } from './search.js';
+import type {
+  VectorStore,
+  VectorStoreRecord,
+  VectorStoreFilter,
+  VectorStoreSearchMatch,
+  VectorStoreListOptions,
+} from './vector-store.js';
 
-export interface StoreRecord {
-  id: string;
-  content: string;
-  userId?: string;
-  agentId?: string;
-  runId?: string;
-  hash?: string;
-  metadata?: Record<string, unknown>;
-  embedding?: number[];
-  createdAt: string;
-  updatedAt: string;
-}
+// Re-export for backward compatibility
+export type StoreRecord = VectorStoreRecord;
+export type StoreFilter = VectorStoreFilter;
+export type SearchMatch = VectorStoreSearchMatch;
 
-export interface StoreFilter {
-  userId?: string;
-  agentId?: string;
-  runId?: string;
-}
+const SORTABLE_FIELDS = new Set([
+  'id', 'created_at', 'updated_at', 'data', 'access_count', 'category', 'scope',
+]);
 
-export interface SearchMatch {
-  id: string;
-  content: string;
-  score: number;
-  metadata?: Record<string, unknown>;
-}
-
-export class MemoryStore {
+export class MemoryStore implements VectorStore {
   private db: Database.Database;
 
   constructor(dbPath: string) {
@@ -47,8 +37,7 @@ export class MemoryStore {
     `);
   }
 
-  /** Parse a payload JSON blob into a StoreRecord */
-  private toRecord(row: { id: string; vector: string; payload: string; created_at: string }): StoreRecord {
+  private toRecord(row: { id: string; vector: string; payload: string; created_at: string }): VectorStoreRecord {
     const payload = JSON.parse(row.payload) as Record<string, unknown>;
     const vector = row.vector ? (JSON.parse(row.vector) as number[]) : undefined;
     return {
@@ -62,6 +51,9 @@ export class MemoryStore {
       embedding: vector,
       createdAt: (payload.created_at as string) ?? row.created_at,
       updatedAt: (payload.updated_at as string) ?? row.created_at,
+      scope: payload.scope as string | undefined,
+      category: payload.category as string | undefined,
+      accessCount: (payload.access_count as number) ?? 0,
     };
   }
 
@@ -70,18 +62,15 @@ export class MemoryStore {
     stmt.run(id, JSON.stringify(vector), JSON.stringify(payload));
   }
 
-  getById(id: string, userId?: string, agentId?: string): StoreRecord | null {
+  getById(id: string, userId?: string, agentId?: string): VectorStoreRecord | null {
     const row = this.db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as
       | { id: string; vector: string; payload: string; created_at: string }
       | undefined;
     if (!row) return null;
 
     const record = this.toRecord(row);
-
-    // Access control (matching Python behavior)
     if (userId && record.userId !== userId) return null;
     if (agentId && record.agentId !== agentId) return null;
-
     return record;
   }
 
@@ -96,18 +85,29 @@ export class MemoryStore {
   }
 
   list(
-    filters: StoreFilter = {},
+    filters: VectorStoreFilter = {},
     limit = 100,
-    offset = 0
-  ): { records: StoreRecord[]; total: number } {
+    offset = 0,
+    options: VectorStoreListOptions = {}
+  ): { records: VectorStoreRecord[]; total: number } {
     const { where, params } = this.buildWhereClause(filters);
 
     const countRow = this.db
       .prepare(`SELECT COUNT(*) as cnt FROM memories${where}`)
       .get(...params) as { cnt: number };
 
+    let orderClause = 'ORDER BY id DESC';
+    if (options.sortBy) {
+      const direction = options.order === 'asc' ? 'ASC' : 'DESC';
+      if (options.sortBy === 'id') {
+        orderClause = `ORDER BY id ${direction}`;
+      } else if (SORTABLE_FIELDS.has(options.sortBy)) {
+        orderClause = `ORDER BY json_extract(payload, '$.${options.sortBy}') ${direction}`;
+      }
+    }
+
     const rows = this.db
-      .prepare(`SELECT * FROM memories${where} ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT * FROM memories${where} ${orderClause} LIMIT ? OFFSET ?`)
       .all(...params, limit, offset) as Array<{
       id: string;
       vector: string;
@@ -115,20 +115,17 @@ export class MemoryStore {
       created_at: string;
     }>;
 
-    return {
-      records: rows.map((r) => this.toRecord(r)),
-      total: countRow.cnt,
-    };
+    return { records: rows.map((r) => this.toRecord(r)), total: countRow.cnt };
   }
 
-  search(queryVector: number[], filters: StoreFilter = {}, limit = 30): SearchMatch[] {
+  search(queryVector: number[], filters: VectorStoreFilter = {}, limit = 30): VectorStoreSearchMatch[] {
     const { where, params } = this.buildWhereClause(filters);
 
     const rows = this.db
       .prepare(`SELECT id, vector, payload FROM memories${where}`)
       .all(...params) as Array<{ id: string; vector: string; payload: string }>;
 
-    const scored: SearchMatch[] = [];
+    const scored: VectorStoreSearchMatch[] = [];
     for (const row of rows) {
       if (!row.vector) continue;
       const vec = JSON.parse(row.vector) as number[];
@@ -139,6 +136,9 @@ export class MemoryStore {
         content: (payload.data as string) ?? '',
         score,
         metadata: payload.metadata as Record<string, unknown> | undefined,
+        createdAt: payload.created_at as string | undefined,
+        updatedAt: payload.updated_at as string | undefined,
+        accessCount: (payload.access_count as number) ?? 0,
       });
     }
 
@@ -146,7 +146,37 @@ export class MemoryStore {
     return scored.slice(0, limit);
   }
 
-  removeAll(filters: StoreFilter = {}): void {
+  count(filters: VectorStoreFilter = {}): number {
+    const { where, params } = this.buildWhereClause(filters);
+    const row = this.db
+      .prepare(`SELECT COUNT(*) as cnt FROM memories${where}`)
+      .get(...params) as { cnt: number };
+    return row.cnt;
+  }
+
+  incrementAccessCount(id: string): void {
+    this.db.prepare(`
+      UPDATE memories
+      SET payload = json_set(payload, '$.access_count',
+        COALESCE(json_extract(payload, '$.access_count'), 0) + 1
+      )
+      WHERE id = ?
+    `).run(id);
+  }
+
+  incrementAccessCountBatch(ids: string[]): void {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(',');
+    this.db.prepare(`
+      UPDATE memories
+      SET payload = json_set(payload, '$.access_count',
+        COALESCE(json_extract(payload, '$.access_count'), 0) + 1
+      )
+      WHERE id IN (${placeholders})
+    `).run(...ids);
+  }
+
+  removeAll(filters: VectorStoreFilter = {}): void {
     const { where, params } = this.buildWhereClause(filters);
     this.db.prepare(`DELETE FROM memories${where}`).run(...params);
   }
@@ -155,7 +185,7 @@ export class MemoryStore {
     this.db.close();
   }
 
-  private buildWhereClause(filters: StoreFilter): {
+  private buildWhereClause(filters: VectorStoreFilter): {
     where: string;
     params: unknown[];
   } {

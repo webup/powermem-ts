@@ -134,4 +134,71 @@ describe('MemoryStore', () => {
     expect(total).toBe(1);
     expect(records[0].userId).toBe('bob');
   });
+
+  // ── New features ──────────────────────────────────────────────────────
+
+  it('count returns correct number', () => {
+    store.insert('1', [1, 0], makePayload({ user_id: 'alice' }));
+    store.insert('2', [0, 1], makePayload({ user_id: 'bob' }));
+    store.insert('3', [1, 1], makePayload({ user_id: 'alice' }));
+    expect(store.count()).toBe(3);
+    expect(store.count({ userId: 'alice' })).toBe(2);
+    expect(store.count({ userId: 'bob' })).toBe(1);
+    expect(store.count({ userId: 'nobody' })).toBe(0);
+  });
+
+  it('list with sortBy created_at asc', () => {
+    store.insert('1', [1, 0], makePayload({ data: 'old', created_at: '2024-01-01T00:00:00Z' }));
+    store.insert('2', [0, 1], makePayload({ data: 'new', created_at: '2024-06-01T00:00:00Z' }));
+    store.insert('3', [1, 1], makePayload({ data: 'mid', created_at: '2024-03-01T00:00:00Z' }));
+
+    const { records } = store.list({}, 100, 0, { sortBy: 'created_at', order: 'asc' });
+    expect(records[0].content).toBe('old');
+    expect(records[1].content).toBe('mid');
+    expect(records[2].content).toBe('new');
+  });
+
+  it('list with sortBy created_at desc', () => {
+    store.insert('1', [1, 0], makePayload({ data: 'old', created_at: '2024-01-01T00:00:00Z' }));
+    store.insert('2', [0, 1], makePayload({ data: 'new', created_at: '2024-06-01T00:00:00Z' }));
+    const { records } = store.list({}, 100, 0, { sortBy: 'created_at', order: 'desc' });
+    expect(records[0].content).toBe('new');
+  });
+
+  it('incrementAccessCount', () => {
+    store.insert('1', [1, 0], makePayload({ access_count: 0 }));
+    expect(store.getById('1')!.accessCount).toBe(0);
+    store.incrementAccessCount('1');
+    expect(store.getById('1')!.accessCount).toBe(1);
+    store.incrementAccessCount('1');
+    expect(store.getById('1')!.accessCount).toBe(2);
+  });
+
+  it('incrementAccessCountBatch', () => {
+    store.insert('1', [1, 0], makePayload({ access_count: 0 }));
+    store.insert('2', [0, 1], makePayload({ access_count: 5 }));
+    store.incrementAccessCountBatch(['1', '2']);
+    expect(store.getById('1')!.accessCount).toBe(1);
+    expect(store.getById('2')!.accessCount).toBe(6);
+  });
+
+  it('search returns createdAt, updatedAt, accessCount', () => {
+    store.insert('1', [1, 0], makePayload({
+      data: 'test',
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: '2024-06-01T00:00:00Z',
+      access_count: 3,
+    }));
+    const results = store.search([1, 0], {}, 10);
+    expect(results[0].createdAt).toBe('2024-01-01T00:00:00Z');
+    expect(results[0].updatedAt).toBe('2024-06-01T00:00:00Z');
+    expect(results[0].accessCount).toBe(3);
+  });
+
+  it('toRecord parses scope and category', () => {
+    store.insert('1', [1, 0], makePayload({ scope: 'personal', category: 'preference' }));
+    const rec = store.getById('1');
+    expect(rec!.scope).toBe('personal');
+    expect(rec!.category).toBe('preference');
+  });
 });

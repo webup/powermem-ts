@@ -15,10 +15,13 @@ import type {
   MemoryRecord,
 } from '../../types/memory.js';
 import type { AddResult, SearchResult, MemoryListResult } from '../../types/responses.js';
-import { MemoryStore, type StoreFilter, type StoreRecord } from './store.js';
+import type { RerankerFn } from '../../types/options.js';
+import { MemoryStore } from './store.js';
+import type { VectorStoreFilter, VectorStoreRecord, VectorStoreSearchMatch } from './vector-store.js';
 import { Embedder } from './embedder.js';
-import { Inferrer, type MemoryAction } from './inferrer.js';
+import { Inferrer } from './inferrer.js';
 import { SnowflakeIDGenerator } from './snowflake.js';
+import { computeDecayFactor, applyDecay } from './decay.js';
 import { createEmbeddingsFromEnv, createLLMFromEnv } from './provider-factory.js';
 import { getDefaultHomeDir } from '../../utils/platform.js';
 
@@ -26,6 +29,19 @@ export interface NativeProviderOptions {
   embeddings?: Embeddings;
   llm?: BaseChatModel;
   dbPath?: string;
+  customFactExtractionPrompt?: string;
+  customUpdateMemoryPrompt?: string;
+  fallbackToSimpleAdd?: boolean;
+  reranker?: RerankerFn;
+  enableDecay?: boolean;
+  decayWeight?: number;
+}
+
+interface Config {
+  fallbackToSimpleAdd: boolean;
+  reranker?: RerankerFn;
+  enableDecay: boolean;
+  decayWeight: number;
 }
 
 function md5(content: string): string {
@@ -36,7 +52,7 @@ function nowISO(): string {
   return new Date().toISOString();
 }
 
-function storeRecordToMemoryRecord(rec: StoreRecord): MemoryRecord {
+function toMemoryRecord(rec: VectorStoreRecord): MemoryRecord {
   return {
     id: rec.id,
     memoryId: rec.id,
@@ -47,6 +63,9 @@ function storeRecordToMemoryRecord(rec: StoreRecord): MemoryRecord {
     metadata: rec.metadata,
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt,
+    scope: rec.scope,
+    category: rec.category,
+    accessCount: rec.accessCount,
   };
 }
 
@@ -55,15 +74,21 @@ export class NativeProvider implements MemoryProvider {
   private readonly embedder: Embedder;
   private readonly inferrer?: Inferrer;
   private readonly idGen = new SnowflakeIDGenerator();
+  private readonly config: Config;
 
-  private constructor(store: MemoryStore, embedder: Embedder, inferrer?: Inferrer) {
+  private constructor(store: MemoryStore, embedder: Embedder, inferrer?: Inferrer, config?: Partial<Config>) {
     this.store = store;
     this.embedder = embedder;
     this.inferrer = inferrer;
+    this.config = {
+      fallbackToSimpleAdd: config?.fallbackToSimpleAdd ?? false,
+      reranker: config?.reranker,
+      enableDecay: config?.enableDecay ?? false,
+      decayWeight: config?.decayWeight ?? 0.3,
+    };
   }
 
   static async create(options: NativeProviderOptions = {}): Promise<NativeProvider> {
-    // Resolve DB path
     const dbPath = options.dbPath ?? path.join(getDefaultHomeDir(), 'memories.db');
     const dbDir = path.dirname(dbPath);
     if (!fs.existsSync(dbDir)) {
@@ -71,11 +96,9 @@ export class NativeProvider implements MemoryProvider {
     }
     const store = new MemoryStore(dbPath);
 
-    // Set up embedder
     const embeddingsInstance = options.embeddings ?? (await createEmbeddingsFromEnv());
     const embedder = new Embedder(embeddingsInstance);
 
-    // Set up inferrer (optional — only if LLM available)
     let inferrer: Inferrer | undefined;
     if (options.llm) {
       inferrer = new Inferrer(options.llm);
@@ -84,119 +107,114 @@ export class NativeProvider implements MemoryProvider {
         const llm = await createLLMFromEnv();
         inferrer = new Inferrer(llm);
       } catch {
-        // LLM not configured — infer will be unavailable
+        // LLM not configured
       }
     }
 
-    return new NativeProvider(store, embedder, inferrer);
+    if (inferrer && (options.customFactExtractionPrompt || options.customUpdateMemoryPrompt)) {
+      inferrer.setCustomPrompts(options.customFactExtractionPrompt, options.customUpdateMemoryPrompt);
+    }
+
+    return new NativeProvider(store, embedder, inferrer, {
+      fallbackToSimpleAdd: options.fallbackToSimpleAdd,
+      reranker: options.reranker,
+      enableDecay: options.enableDecay,
+      decayWeight: options.decayWeight,
+    });
   }
+
+  // ─── Add ────────────────────────────────────────────────────────────────
 
   async add(params: AddParams): Promise<AddResult> {
     const shouldInfer = params.infer !== false && this.inferrer != null;
-
     if (shouldInfer) {
       return this.intelligentAdd(params);
     }
     return this.simpleAdd(params);
   }
 
-  private async simpleAdd(params: AddParams): Promise<AddResult> {
-    const id = this.idGen.nextId();
-    const embedding = await this.embedder.embed(params.content);
+  private buildPayload(content: string, params: {
+    userId?: string; agentId?: string; runId?: string;
+    metadata?: Record<string, unknown>; scope?: string; category?: string;
+  }, createdAt?: string): Record<string, unknown> {
     const now = nowISO();
-    const hash = md5(params.content);
-
-    const payload: Record<string, unknown> = {
-      data: params.content,
+    return {
+      data: content,
       user_id: params.userId ?? null,
       agent_id: params.agentId ?? null,
       run_id: params.runId ?? null,
-      hash,
-      created_at: now,
+      hash: md5(content),
+      created_at: createdAt ?? now,
       updated_at: now,
-      category: null,
+      scope: params.scope ?? null,
+      category: params.category ?? null,
+      access_count: 0,
       metadata: params.metadata ?? {},
     };
+  }
 
-    this.store.insert(id, embedding, payload);
-
-    const record: MemoryRecord = {
-      id,
-      memoryId: id,
-      content: params.content,
-      userId: params.userId,
-      agentId: params.agentId,
-      runId: params.runId,
-      metadata: params.metadata,
-      createdAt: now,
-      updatedAt: now,
+  private buildRecord(id: string, content: string, payload: Record<string, unknown>, params: {
+    userId?: string; agentId?: string; runId?: string;
+    metadata?: Record<string, unknown>; scope?: string; category?: string;
+  }): MemoryRecord {
+    return {
+      id, memoryId: id, content,
+      userId: params.userId, agentId: params.agentId, runId: params.runId,
+      metadata: params.metadata, scope: params.scope, category: params.category,
+      createdAt: payload.created_at as string,
+      updatedAt: payload.updated_at as string,
+      accessCount: 0,
     };
+  }
 
-    return { memories: [record], message: 'Memory created successfully' };
+  private async simpleAdd(params: AddParams): Promise<AddResult> {
+    const id = this.idGen.nextId();
+    const embedding = await this.embedder.embed(params.content);
+    const payload = this.buildPayload(params.content, params);
+    this.store.insert(id, embedding, payload);
+    return {
+      memories: [this.buildRecord(id, params.content, payload, params)],
+      message: 'Memory created successfully',
+    };
   }
 
   private async intelligentAdd(params: AddParams): Promise<AddResult> {
-    // Step 1: Extract facts
     const facts = await this.inferrer!.extractFacts(params.content);
     if (facts.length === 0) {
+      if (this.config.fallbackToSimpleAdd) return this.simpleAdd(params);
       return { memories: [], message: 'No memories were created (no facts extracted)' };
     }
 
-    // Step 2: For each fact, find similar existing memories
-    const filters: StoreFilter = {
-      userId: params.userId,
-      agentId: params.agentId,
-      runId: params.runId,
+    const filters: VectorStoreFilter = {
+      userId: params.userId, agentId: params.agentId, runId: params.runId,
     };
 
+    // Search for similar existing memories
     const existingMap = new Map<string, { id: string; text: string; score: number }>();
-
     for (const fact of facts) {
       const factEmbedding = await this.embedder.embed(fact);
       const matches = this.store.search(factEmbedding, filters, 5);
-
       for (const match of matches) {
         const existing = existingMap.get(match.id);
         if (!existing || match.score > existing.score) {
-          existingMap.set(match.id, {
-            id: match.id,
-            text: match.content,
-            score: match.score,
-          });
+          existingMap.set(match.id, { id: match.id, text: match.content, score: match.score });
         }
       }
     }
 
-    // Limit to 10 existing memories
     const existingMemories = Array.from(existingMap.values())
       .sort((a, b) => b.score - a.score)
       .slice(0, 10);
 
-    // Optimization: if no existing memories, skip LLM decision — just ADD all facts
+    // No existing memories — skip LLM decision, just ADD all facts
     if (existingMemories.length === 0) {
       const resultMemories: MemoryRecord[] = [];
       for (const fact of facts) {
         const id = this.idGen.nextId();
         const embedding = await this.embedder.embed(fact);
-        const now = nowISO();
-        const hash = md5(fact);
-        const payload: Record<string, unknown> = {
-          data: fact,
-          user_id: params.userId ?? null,
-          agent_id: params.agentId ?? null,
-          run_id: params.runId ?? null,
-          hash,
-          created_at: now,
-          updated_at: now,
-          category: null,
-          metadata: params.metadata ?? {},
-        };
+        const payload = this.buildPayload(fact, params);
         this.store.insert(id, embedding, payload);
-        resultMemories.push({
-          id, memoryId: id, content: fact,
-          userId: params.userId, agentId: params.agentId, runId: params.runId,
-          metadata: params.metadata, createdAt: now, updatedAt: now,
-        });
+        resultMemories.push(this.buildRecord(id, fact, payload, params));
       }
       const count = resultMemories.length;
       return {
@@ -205,94 +223,34 @@ export class NativeProvider implements MemoryProvider {
       };
     }
 
-    // Step 3: Build temp ID mapping
+    // Build temp ID mapping
     const tempToReal = new Map<string, string>();
-    const realToTemp = new Map<string, string>();
     existingMemories.forEach((m, idx) => {
-      const tempId = String(idx);
-      tempToReal.set(tempId, m.id);
-      realToTemp.set(m.id, tempId);
+      tempToReal.set(String(idx), m.id);
     });
-
-    // Step 4: Ask LLM to decide actions
-    const tempMemories = existingMemories.map((m, idx) => ({
-      id: String(idx),
-      text: m.text,
-    }));
+    const tempMemories = existingMemories.map((m, idx) => ({ id: String(idx), text: m.text }));
 
     const actions = await this.inferrer!.decideActions(facts, tempMemories, tempToReal);
 
-    // Step 5: Execute actions
+    // Execute actions
     const resultMemories: MemoryRecord[] = [];
-
     for (const action of actions) {
       switch (action.event) {
         case 'ADD': {
           const id = this.idGen.nextId();
           const embedding = await this.embedder.embed(action.text);
-          const now = nowISO();
-          const hash = md5(action.text);
-
-          const payload: Record<string, unknown> = {
-            data: action.text,
-            user_id: params.userId ?? null,
-            agent_id: params.agentId ?? null,
-            run_id: params.runId ?? null,
-            hash,
-            created_at: now,
-            updated_at: now,
-            category: null,
-            metadata: params.metadata ?? {},
-          };
-
+          const payload = this.buildPayload(action.text, params);
           this.store.insert(id, embedding, payload);
-          resultMemories.push({
-            id,
-            memoryId: id,
-            content: action.text,
-            userId: params.userId,
-            agentId: params.agentId,
-            runId: params.runId,
-            metadata: params.metadata,
-            createdAt: now,
-            updatedAt: now,
-          });
+          resultMemories.push(this.buildRecord(id, action.text, payload, params));
           break;
         }
         case 'UPDATE': {
           const realId = tempToReal.get(action.id) ?? action.id;
-          const embedding = await this.embedder.embed(action.text);
-          const now = nowISO();
-          const hash = md5(action.text);
-
-          // Get existing record to preserve created_at
           const existing = this.store.getById(realId);
-          const createdAt = existing?.createdAt ?? now;
-
-          const payload: Record<string, unknown> = {
-            data: action.text,
-            user_id: params.userId ?? existing?.userId ?? null,
-            agent_id: params.agentId ?? existing?.agentId ?? null,
-            run_id: params.runId ?? existing?.runId ?? null,
-            hash,
-            created_at: createdAt,
-            updated_at: now,
-            category: null,
-            metadata: params.metadata ?? existing?.metadata ?? {},
-          };
-
+          const embedding = await this.embedder.embed(action.text);
+          const payload = this.buildPayload(action.text, params, existing?.createdAt);
           this.store.update(realId, embedding, payload);
-          resultMemories.push({
-            id: realId,
-            memoryId: realId,
-            content: action.text,
-            userId: params.userId ?? existing?.userId,
-            agentId: params.agentId ?? existing?.agentId,
-            runId: params.runId ?? existing?.runId,
-            metadata: params.metadata ?? existing?.metadata,
-            createdAt,
-            updatedAt: now,
-          });
+          resultMemories.push(this.buildRecord(realId, action.text, payload, params));
           break;
         }
         case 'DELETE': {
@@ -307,115 +265,147 @@ export class NativeProvider implements MemoryProvider {
     }
 
     const count = resultMemories.length;
-    const message =
-      count === 0
-        ? 'No memories were created (likely duplicates detected or no facts extracted)'
-        : count === 1
-          ? 'Memory created successfully'
-          : `Created ${count} memories successfully`;
+    if (count === 0 && this.config.fallbackToSimpleAdd) {
+      return this.simpleAdd(params);
+    }
+
+    const message = count === 0
+      ? 'No memories were created (likely duplicates detected or no facts extracted)'
+      : count === 1
+        ? 'Memory created successfully'
+        : `Created ${count} memories successfully`;
 
     return { memories: resultMemories, message };
   }
 
+  // ─── Search ─────────────────────────────────────────────────────────────
+
   async search(params: SearchParams): Promise<SearchResult> {
     const queryEmbedding = await this.embedder.embed(params.query);
-    const filters: StoreFilter = {
-      userId: params.userId,
-      agentId: params.agentId,
-      runId: params.runId,
+    const filters: VectorStoreFilter = {
+      userId: params.userId, agentId: params.agentId, runId: params.runId,
     };
     const limit = params.limit ?? 30;
 
-    const matches = this.store.search(queryEmbedding, filters, limit);
+    let matches = this.store.search(queryEmbedding, filters, limit);
 
-    return {
-      results: matches.map((m) => ({
-        memoryId: m.id,
-        content: m.content,
-        score: m.score,
-        metadata: m.metadata,
-      })),
-      total: matches.length,
-      query: params.query,
-    };
+    // Ebbinghaus decay
+    if (this.config.enableDecay) {
+      for (const match of matches) {
+        const decay = computeDecayFactor({
+          createdAt: match.createdAt ?? new Date().toISOString(),
+          updatedAt: match.updatedAt ?? match.createdAt ?? new Date().toISOString(),
+          accessCount: match.accessCount ?? 0,
+        });
+        match.score = applyDecay(match.score, decay, this.config.decayWeight);
+      }
+      matches.sort((a, b) => b.score - a.score);
+    }
+
+    // Threshold filter
+    if (params.threshold !== undefined) {
+      matches = matches.filter((m) => m.score >= params.threshold!);
+    }
+
+    // Increment access counts
+    const matchIds = matches.map((m) => m.id);
+    if (matchIds.length > 0) {
+      this.store.incrementAccessCountBatch(matchIds);
+    }
+
+    let results: import('../../types/responses.js').SearchHit[] = matches.map((m) => ({
+      memoryId: m.id,
+      content: m.content,
+      score: m.score,
+      metadata: m.metadata,
+    }));
+
+    // Reranker
+    if (this.config.reranker) {
+      results = await this.config.reranker(params.query, results);
+    }
+
+    return { results, total: results.length, query: params.query };
   }
+
+  // ─── Get ────────────────────────────────────────────────────────────────
 
   async get(memoryId: string): Promise<MemoryRecord | null> {
     const rec = this.store.getById(memoryId);
     if (!rec) return null;
-    return storeRecordToMemoryRecord(rec);
+    this.store.incrementAccessCount(memoryId);
+    return toMemoryRecord(rec);
   }
+
+  // ─── Update ─────────────────────────────────────────────────────────────
 
   async update(memoryId: string, params: UpdateParams): Promise<MemoryRecord> {
     const existing = this.store.getById(memoryId);
-    if (!existing) {
-      throw new Error(`Memory not found: ${memoryId}`);
-    }
+    if (!existing) throw new Error(`Memory not found: ${memoryId}`);
 
     const content = params.content ?? existing.content;
     const metadata = params.metadata ?? existing.metadata;
-    const now = nowISO();
 
-    // Re-embed if content changed
     let embedding = existing.embedding ?? [];
     if (params.content && params.content !== existing.content) {
       embedding = await this.embedder.embed(content);
     }
-
-    const hash = md5(content);
 
     const payload: Record<string, unknown> = {
       data: content,
       user_id: existing.userId ?? null,
       agent_id: existing.agentId ?? null,
       run_id: existing.runId ?? null,
-      hash,
+      hash: md5(content),
       created_at: existing.createdAt,
-      updated_at: now,
-      category: null,
+      updated_at: nowISO(),
+      scope: existing.scope ?? null,
+      category: existing.category ?? null,
+      access_count: existing.accessCount ?? 0,
       metadata: metadata ?? {},
     };
 
     this.store.update(memoryId, embedding, payload);
 
     return {
-      id: memoryId,
-      memoryId,
-      content,
-      userId: existing.userId,
-      agentId: existing.agentId,
-      runId: existing.runId,
-      metadata,
+      id: memoryId, memoryId, content,
+      userId: existing.userId, agentId: existing.agentId, runId: existing.runId,
+      metadata, scope: existing.scope, category: existing.category,
       createdAt: existing.createdAt,
-      updatedAt: now,
+      updatedAt: payload.updated_at as string,
+      accessCount: existing.accessCount,
     };
   }
+
+  // ─── Delete ─────────────────────────────────────────────────────────────
 
   async delete(memoryId: string): Promise<boolean> {
     return this.store.remove(memoryId);
   }
 
+  // ─── GetAll ─────────────────────────────────────────────────────────────
+
   async getAll(params: GetAllParams = {}): Promise<MemoryListResult> {
-    const filters: StoreFilter = {
-      userId: params.userId,
-      agentId: params.agentId,
-    };
+    const filters: VectorStoreFilter = { userId: params.userId, agentId: params.agentId };
     const limit = params.limit ?? 100;
     const offset = params.offset ?? 0;
-
-    const { records, total } = this.store.list(filters, limit, offset);
-
-    return {
-      memories: records.map(storeRecordToMemoryRecord),
-      total,
-      limit,
-      offset,
-    };
+    const { records, total } = this.store.list(filters, limit, offset, {
+      sortBy: params.sortBy,
+      order: params.order,
+    });
+    return { memories: records.map(toMemoryRecord), total, limit, offset };
   }
+
+  // ─── Count ──────────────────────────────────────────────────────────────
+
+  async count(params: FilterParams = {}): Promise<number> {
+    return this.store.count({ userId: params.userId, agentId: params.agentId });
+  }
+
+  // ─── Batch ──────────────────────────────────────────────────────────────
 
   async addBatch(memories: BatchItem[], options: BatchOptions = {}): Promise<AddResult> {
     const allMemories: MemoryRecord[] = [];
-
     for (const item of memories) {
       const result = await this.add({
         content: item.content,
@@ -424,22 +414,16 @@ export class NativeProvider implements MemoryProvider {
         agentId: options.agentId,
         runId: options.runId,
         infer: options.infer,
+        scope: item.scope ?? options.scope,
+        category: item.category ?? options.category,
       });
       allMemories.push(...result.memories);
     }
-
-    return {
-      memories: allMemories,
-      message: `Created ${allMemories.length} memories`,
-    };
+    return { memories: allMemories, message: `Created ${allMemories.length} memories` };
   }
 
   async deleteAll(params: FilterParams = {}): Promise<boolean> {
-    const filters: StoreFilter = {
-      userId: params.userId,
-      agentId: params.agentId,
-    };
-    this.store.removeAll(filters);
+    this.store.removeAll({ userId: params.userId, agentId: params.agentId });
     return true;
   }
 

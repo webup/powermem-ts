@@ -2,7 +2,8 @@
  * LLM prompt templates — exact copies from Python powermem.
  */
 
-export function getFactRetrievalPrompt(): string {
+export function getFactRetrievalPrompt(customPrompt?: string): string {
+  if (customPrompt) return customPrompt;
   const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
   return `You are a Personal Information Organizer. Extract relevant facts, memories, preferences, intentions, and needs from conversations into distinct, manageable facts.
 
@@ -77,12 +78,14 @@ LANGUAGE (CRITICAL): Do NOT translate memory text. Keep the same language as the
 
 export function buildUpdateMemoryPrompt(
   existingMemories: Array<{ id: string; text: string }>,
-  facts: string[]
+  facts: string[],
+  customBasePrompt?: string
 ): string {
+  const basePrompt = customBasePrompt ?? DEFAULT_UPDATE_MEMORY_PROMPT;
   const memoriesJson = JSON.stringify(existingMemories);
   const factsList = facts.map((f) => `- ${f}`).join('\n');
 
-  return `${DEFAULT_UPDATE_MEMORY_PROMPT}
+  return `${basePrompt}
 
 Current memory:
 \`\`\`

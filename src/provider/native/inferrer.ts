@@ -17,11 +17,18 @@ function removeCodeBlocks(content: string): string {
 }
 
 export class Inferrer {
+  private customFactExtractionPrompt?: string;
+  private customUpdateMemoryPrompt?: string;
+
   constructor(private readonly llm: BaseChatModel) {}
 
-  /** Extract atomic facts from input text using LLM. */
+  setCustomPrompts(factPrompt?: string, updatePrompt?: string): void {
+    this.customFactExtractionPrompt = factPrompt;
+    this.customUpdateMemoryPrompt = updatePrompt;
+  }
+
   async extractFacts(content: string): Promise<string[]> {
-    const systemPrompt = getFactRetrievalPrompt();
+    const systemPrompt = getFactRetrievalPrompt(this.customFactExtractionPrompt);
     const userPrompt = `Input:\n${content}`;
 
     const response = await this.llm.invoke([
@@ -37,11 +44,9 @@ export class Inferrer {
 
     try {
       const parsed = JSON.parse(cleaned) as { facts?: unknown };
-      // Defensive: handle various LLM output formats
       if (Array.isArray(parsed.facts)) {
         return parsed.facts.filter((f): f is string => typeof f === 'string' && f.trim().length > 0);
       }
-      // Some small models return facts as a single string instead of array
       if (typeof parsed.facts === 'string' && parsed.facts.trim().length > 0) {
         return [parsed.facts.trim()];
       }
@@ -51,21 +56,16 @@ export class Inferrer {
     }
   }
 
-  /**
-   * Decide memory actions (ADD/UPDATE/DELETE/NONE) by comparing new facts
-   * against existing memories via LLM.
-   *
-   * @param facts - Newly extracted facts
-   * @param existingMemories - Existing memories with temp IDs
-   * @param idMapping - Map of temp ID ("0","1") → real Snowflake ID
-   * @returns Actions with temp IDs (caller maps back to real IDs)
-   */
   async decideActions(
     facts: string[],
     existingMemories: Array<{ id: string; text: string }>,
     idMapping: Map<string, string>
   ): Promise<MemoryAction[]> {
-    const prompt = buildUpdateMemoryPrompt(existingMemories, facts);
+    const prompt = buildUpdateMemoryPrompt(
+      existingMemories,
+      facts,
+      this.customUpdateMemoryPrompt
+    );
 
     const response = await this.llm.invoke([new HumanMessage(prompt)]);
 

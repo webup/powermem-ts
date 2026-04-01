@@ -2,6 +2,13 @@ export { Memory } from './memory.js';
 export { NativeProvider } from './provider/native/index.js';
 
 export type { MemoryProvider } from './provider/index.js';
+export type {
+  VectorStore,
+  VectorStoreRecord,
+  VectorStoreFilter,
+  VectorStoreSearchMatch,
+  VectorStoreListOptions,
+} from './provider/native/vector-store.js';
 
 export type {
   MemoryRecord,
@@ -21,7 +28,7 @@ export type {
   MemoryListResult,
 } from './types/responses.js';
 
-export type { InitOptions, MemoryOptions } from './types/options.js';
+export type { InitOptions, MemoryOptions, RerankerFn } from './types/options.js';
 
 export {
   PowerMemError,

@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.2.0 — Feature Enhancement (2026-04-01)
+
+### P0 — API Layer
+- **`getAll` sorting**: `sortBy` and `order` params — sort by any payload field (`created_at`, `updated_at`, `category`, etc.)
+- **`search` threshold**: `threshold` param — filter out results below a minimum cosine similarity score
+- **`add` scope/category**: `scope` and `category` fields on `AddParams`, `BatchItem`, `BatchOptions` — stored in payload, returned in `MemoryRecord`
+- **`count()` method**: New method on `MemoryProvider` / `Memory` facade — count records with optional `userId`/`agentId` filter
+- **Custom prompts**: `customFactExtractionPrompt` and `customUpdateMemoryPrompt` in `MemoryOptions` — override default LLM prompts
+- **`fallbackToSimpleAdd`**: When intelligent add produces no facts/actions, fall back to simple add instead of returning empty
+
+### P0 — Architecture
+- **`VectorStore` interface** (`src/provider/native/vector-store.ts`): Abstract storage layer with `insert`, `getById`, `update`, `remove`, `list`, `search`, `count`, `incrementAccessCount`, `removeAll`, `close`. `MemoryStore` (SQLite) is the first implementation. Future backends (OceanBase, PgVector) implement this same interface.
+- Exported `VectorStore`, `VectorStoreRecord`, `VectorStoreFilter`, `VectorStoreSearchMatch`, `VectorStoreListOptions` types
+
+### P1 — Functionality
+- **Reranker**: Optional `reranker` function in `MemoryOptions` — async callback that re-scores/reorders search results after cosine similarity
+- **Access count tracking**: `access_count` in payload, auto-incremented on `get()` and `search()`. Exposed as `accessCount` on `MemoryRecord`
+- **Ebbinghaus memory decay**: `enableDecay` + `decayWeight` in `MemoryOptions` — time-based score adjustment using forgetting curve. Memories accessed more frequently decay slower (stability increases with `access_count`)
+
+### Types
+- `RerankerFn` type exported from `src/types/options.ts`
+- `MemoryRecord` gains `scope`, `category`, `accessCount` fields
+- `SearchParams` gains `threshold`
+- `GetAllParams` gains `sortBy`, `order`
+- `AddParams`/`BatchItem`/`BatchOptions` gain `scope`, `category`
+
+### Tests
+- 124 unit tests (+29 new) covering all features
+- 18 e2e tests with real Ollama models (unchanged)
+
+---
+
 ## v0.1.0 — NativeProvider (2026-04-01)
 
 First release with pure TypeScript implementation. **Zero Python dependency.**

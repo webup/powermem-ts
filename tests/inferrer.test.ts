@@ -140,4 +140,26 @@ describe('Inferrer', () => {
       expect(promptText).not.toContain('snowflake');
     });
   });
+
+  describe('custom prompts', () => {
+    it('uses custom fact extraction prompt', async () => {
+      const llm = new MockLLM(['{"facts": ["custom"]}']);
+      const inferrer = new Inferrer(llm);
+      inferrer.setCustomPrompts('CUSTOM FACT PROMPT', undefined);
+
+      await inferrer.extractFacts('test');
+      const systemMsg = llm.calls[0][0].content as string;
+      expect(systemMsg).toBe('CUSTOM FACT PROMPT');
+    });
+
+    it('uses custom update memory prompt', async () => {
+      const llm = new MockLLM([JSON.stringify({ memory: [] })]);
+      const inferrer = new Inferrer(llm);
+      inferrer.setCustomPrompts(undefined, 'CUSTOM UPDATE PROMPT');
+
+      await inferrer.decideActions(['fact'], [], new Map());
+      const prompt = llm.calls[0][0].content as string;
+      expect(prompt).toContain('CUSTOM UPDATE PROMPT');
+    });
+  });
 });

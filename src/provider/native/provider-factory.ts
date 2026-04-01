@@ -59,7 +59,6 @@ export async function createEmbeddingsFromEnv(): Promise<Embeddings> {
 
   if (provider === 'ollama') {
     try {
-      // @ts-expect-error — optional peer dependency
       const { OllamaEmbeddings } = await import('@langchain/ollama');
       return new OllamaEmbeddings({
         model: model ?? 'nomic-embed-text',
@@ -140,7 +139,6 @@ export async function createLLMFromEnv(): Promise<BaseChatModel> {
 
   if (provider === 'ollama') {
     try {
-      // @ts-expect-error — optional peer dependency
       const { ChatOllama } = await import('@langchain/ollama');
       return new ChatOllama({
         model: model ?? 'llama3',

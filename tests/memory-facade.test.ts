@@ -113,4 +113,18 @@ describe('Memory facade', () => {
     const all = await memory.getAll();
     expect(all.total).toBe(0);
   });
+
+  it('count returns correct number', async () => {
+    memory = await Memory.create({
+      embeddings: new MockEmbeddings(),
+      dbPath: ':memory:',
+    });
+
+    await memory.add('a', { userId: 'alice', infer: false });
+    await memory.add('b', { userId: 'bob', infer: false });
+    await memory.add('c', { userId: 'alice', infer: false });
+
+    expect(await memory.count()).toBe(3);
+    expect(await memory.count({ userId: 'alice' })).toBe(2);
+  });
 });
