@@ -1,7 +1,7 @@
 /**
  * VectorStore interface — abstract storage layer.
  *
- * MemoryStore (SQLite) is the current implementation.
+ * SQLiteStore is the current implementation.
  * Future backends (OceanBase, PgVector) implement this same interface.
  */
 

@@ -17,7 +17,7 @@ const SORTABLE_FIELDS = new Set([
   'id', 'created_at', 'updated_at', 'data', 'access_count', 'category', 'scope',
 ]);
 
-export class MemoryStore implements VectorStore {
+export class SQLiteStore implements VectorStore {
   private db: Database.Database;
 
   constructor(dbPath: string) {

@@ -16,7 +16,7 @@ import type {
 } from '../../types/memory.js';
 import type { AddResult, SearchResult, MemoryListResult } from '../../types/responses.js';
 import type { RerankerFn } from '../../types/options.js';
-import { MemoryStore } from './store.js';
+import { SQLiteStore } from './store.js';
 import type { VectorStoreFilter, VectorStoreRecord, VectorStoreSearchMatch } from './vector-store.js';
 import { Embedder } from './embedder.js';
 import { Inferrer } from './inferrer.js';
@@ -70,13 +70,13 @@ function toMemoryRecord(rec: VectorStoreRecord): MemoryRecord {
 }
 
 export class NativeProvider implements MemoryProvider {
-  private readonly store: MemoryStore;
+  private readonly store: SQLiteStore;
   private readonly embedder: Embedder;
   private readonly inferrer?: Inferrer;
   private readonly idGen = new SnowflakeIDGenerator();
   private readonly config: Config;
 
-  private constructor(store: MemoryStore, embedder: Embedder, inferrer?: Inferrer, config?: Partial<Config>) {
+  private constructor(store: SQLiteStore, embedder: Embedder, inferrer?: Inferrer, config?: Partial<Config>) {
     this.store = store;
     this.embedder = embedder;
     this.inferrer = inferrer;
@@ -94,7 +94,7 @@ export class NativeProvider implements MemoryProvider {
     if (!fs.existsSync(dbDir)) {
       fs.mkdirSync(dbDir, { recursive: true });
     }
-    const store = new MemoryStore(dbPath);
+    const store = new SQLiteStore(dbPath);
 
     const embeddingsInstance = options.embeddings ?? (await createEmbeddingsFromEnv());
     const embedder = new Embedder(embeddingsInstance);

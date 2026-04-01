@@ -11,7 +11,7 @@
 - **`fallbackToSimpleAdd`**: When intelligent add produces no facts/actions, fall back to simple add instead of returning empty
 
 ### P0 — Architecture
-- **`VectorStore` interface** (`src/provider/native/vector-store.ts`): Abstract storage layer with `insert`, `getById`, `update`, `remove`, `list`, `search`, `count`, `incrementAccessCount`, `removeAll`, `close`. `MemoryStore` (SQLite) is the first implementation. Future backends (OceanBase, PgVector) implement this same interface.
+- **`VectorStore` interface** (`src/provider/native/vector-store.ts`): Abstract storage layer with `insert`, `getById`, `update`, `remove`, `list`, `search`, `count`, `incrementAccessCount`, `removeAll`, `close`. `SQLiteStore` (SQLite) is the first implementation. Future backends (OceanBase, PgVector) implement this same interface.
 - Exported `VectorStore`, `VectorStoreRecord`, `VectorStoreFilter`, `VectorStoreSearchMatch`, `VectorStoreListOptions` types
 
 ### P1 — Functionality

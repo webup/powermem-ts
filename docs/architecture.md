@@ -64,7 +64,7 @@ NativeProvider
   │     ├── extractFacts()    → FACT_RETRIEVAL_PROMPT → ["fact1", "fact2"]
   │     └── decideActions()   → UPDATE_MEMORY_PROMPT  → ADD/UPDATE/DELETE/NONE
   │
-  ├── MemoryStore           SQLite via better-sqlite3
+  ├── SQLiteStore           SQLite via better-sqlite3
   │     ├── insert / getById / update / remove
   │     ├── list (filtered, paginated)
   │     └── search (load vectors → cosine similarity → rank)
@@ -149,7 +149,7 @@ Memory.create(options?)
   │
   └─ NativeProvider.create():
       ├─ Resolve dbPath (default ~/.powermem/memories.db)
-      ├─ Create SQLite database (MemoryStore)
+      ├─ Create SQLite database (SQLiteStore)
       ├─ Set up Embedder:
       │   ├─ options.embeddings provided? → Use it
       │   └─ Not provided → createEmbeddingsFromEnv()

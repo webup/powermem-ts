@@ -1,11 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { MemoryStore } from '../src/provider/native/store.js';
+import { SQLiteStore } from '../src/provider/native/store.js';
 
-describe('MemoryStore', () => {
-  let store: MemoryStore;
+describe('SQLiteStore', () => {
+  let store: SQLiteStore;
 
   beforeEach(() => {
-    store = new MemoryStore(':memory:');
+    store = new SQLiteStore(':memory:');
   });
 
   afterEach(() => {

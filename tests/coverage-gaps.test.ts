@@ -4,7 +4,7 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { Memory } from '../src/memory.js';
 import { NativeProvider } from '../src/provider/native/index.js';
-import { MemoryStore } from '../src/provider/native/store.js';
+import { SQLiteStore } from '../src/provider/native/store.js';
 import { MockEmbeddings, MockLLM } from './mocks.js';
 
 // ── memory.ts:41-42 — HttpProvider (serverUrl) path ──────────────────────
@@ -23,11 +23,11 @@ describe('Memory.create with serverUrl', () => {
 
 // ── store.ts:170-175 — agentId and runId filter branches ─────────────────
 
-describe('MemoryStore filters', () => {
-  let store: MemoryStore;
+describe('SQLiteStore filters', () => {
+  let store: SQLiteStore;
 
   beforeEach(() => {
-    store = new MemoryStore(':memory:');
+    store = new SQLiteStore(':memory:');
   });
   afterEach(() => {
     store.close();
