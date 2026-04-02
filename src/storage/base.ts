@@ -64,3 +64,17 @@ export interface VectorStore {
   removeAll(filters?: VectorStoreFilter): Promise<void>;
   close(): Promise<void>;
 }
+
+/**
+ * GraphStoreBase — abstract interface for graph storage.
+ * Port of Python powermem/storage/base.py GraphStoreBase.
+ */
+export interface GraphStoreBase {
+  add(data: string, filters: Record<string, unknown>): Promise<Record<string, unknown>>;
+  search(query: string, filters: Record<string, unknown>, limit?: number): Promise<Array<Record<string, unknown>>>;
+  deleteAll(filters: Record<string, unknown>): Promise<void>;
+  getAll(filters: Record<string, unknown>, limit?: number): Promise<Array<Record<string, unknown>>>;
+  reset(): Promise<void>;
+  getStatistics(filters?: Record<string, unknown>): Promise<Record<string, unknown>>;
+  getUniqueUsers(): Promise<string[]>;
+}
