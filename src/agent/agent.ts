@@ -88,7 +88,7 @@ export class AgentMemory {
 
   async delete(
     memoryId: string,
-    options: { userId?: string; agentId?: string } = {}
+    _options: { userId?: string; agentId?: string } = {}
   ): Promise<boolean> {
     return this.memory.delete(memoryId);
   }

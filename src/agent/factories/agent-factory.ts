@@ -4,7 +4,6 @@
  */
 import type { ScopeStrategy } from '../abstract/scope.js';
 import type { PermissionStrategy } from '../abstract/permission.js';
-import type { CollaborationStrategy } from '../abstract/collaboration.js';
 import { ScopeController } from '../components/scope-controller.js';
 import { PermissionController } from '../components/permission-controller.js';
 

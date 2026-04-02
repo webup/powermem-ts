@@ -3,7 +3,7 @@
  * Port of Python powermem/agent/components/scope_controller.py.
  */
 import type { ScopeStrategy } from '../abstract/scope.js';
-import { MemoryScope, MemoryType } from '../types.js';
+import { MemoryScope } from '../types.js';
 
 export class ScopeController implements ScopeStrategy {
   private scopeStorage = new Map<MemoryScope, Map<string, Record<string, unknown>>>();
@@ -32,7 +32,7 @@ export class ScopeController implements ScopeStrategy {
     const scopeMap = this.scopeStorage.get(scope);
     if (!scopeMap) return [];
     const ids: string[] = [];
-    for (const [id, data] of scopeMap) {
+    for (const id of scopeMap.keys()) {
       if (await this.checkScopeAccess(agentId, id)) {
         ids.push(id);
       }
