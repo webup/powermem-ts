@@ -33,71 +33,71 @@ describe('SQLiteStore filters', () => {
     store.close();
   });
 
-  it('list filters by agentId', () => {
-    store.insert('1', [1, 0], {
+  it('list filters by agentId', async () => {
+    await store.insert('1', [1, 0], {
       data: 'a1', agent_id: 'agent-a', user_id: null, run_id: null,
       hash: 'h', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
       category: null, metadata: {},
     });
-    store.insert('2', [0, 1], {
+    await store.insert('2', [0, 1], {
       data: 'b1', agent_id: 'agent-b', user_id: null, run_id: null,
       hash: 'h', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
       category: null, metadata: {},
     });
 
-    const { records, total } = store.list({ agentId: 'agent-a' });
+    const { records, total } = await store.list({ agentId: 'agent-a' });
     expect(total).toBe(1);
     expect(records[0].agentId).toBe('agent-a');
   });
 
-  it('list filters by runId', () => {
-    store.insert('1', [1, 0], {
+  it('list filters by runId', async () => {
+    await store.insert('1', [1, 0], {
       data: 'r1', run_id: 'run-1', user_id: null, agent_id: null,
       hash: 'h', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
       category: null, metadata: {},
     });
-    store.insert('2', [0, 1], {
+    await store.insert('2', [0, 1], {
       data: 'r2', run_id: 'run-2', user_id: null, agent_id: null,
       hash: 'h', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
       category: null, metadata: {},
     });
 
-    const { records, total } = store.list({ runId: 'run-1' });
+    const { records, total } = await store.list({ runId: 'run-1' });
     expect(total).toBe(1);
     expect(records[0].runId).toBe('run-1');
   });
 
-  it('search filters by runId', () => {
-    store.insert('1', [1, 0], {
+  it('search filters by runId', async () => {
+    await store.insert('1', [1, 0], {
       data: 'r1', run_id: 'run-1', user_id: null, agent_id: null,
       hash: 'h', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
       category: null, metadata: {},
     });
-    store.insert('2', [1, 0], {
+    await store.insert('2', [1, 0], {
       data: 'r2', run_id: 'run-2', user_id: null, agent_id: null,
       hash: 'h', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
       category: null, metadata: {},
     });
 
-    const results = store.search([1, 0], { runId: 'run-1' }, 10);
+    const results = await store.search([1, 0], { runId: 'run-1' }, 10);
     expect(results).toHaveLength(1);
     expect(results[0].content).toBe('r1');
   });
 
-  it('removeAll filters by agentId', () => {
-    store.insert('1', [1, 0], {
+  it('removeAll filters by agentId', async () => {
+    await store.insert('1', [1, 0], {
       data: 'a1', agent_id: 'agent-a', user_id: null, run_id: null,
       hash: 'h', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
       category: null, metadata: {},
     });
-    store.insert('2', [0, 1], {
+    await store.insert('2', [0, 1], {
       data: 'b1', agent_id: 'agent-b', user_id: null, run_id: null,
       hash: 'h', created_at: '2024-01-01T00:00:00Z', updated_at: '2024-01-01T00:00:00Z',
       category: null, metadata: {},
     });
 
-    store.removeAll({ agentId: 'agent-a' });
-    const { total } = store.list();
+    await store.removeAll({ agentId: 'agent-a' });
+    const { total } = await store.list();
     expect(total).toBe(1);
   });
 });

@@ -39,4 +39,20 @@ export interface MemoryOptions {
   reranker?: RerankerFn;
   enableDecay?: boolean;
   decayWeight?: number;
+
+  // ─── SeekDB backend ─────────────────────────────────────────────
+  seekdb?: SeekDBOptions;
+}
+
+export interface SeekDBOptions {
+  /** Path to the local seekdb database directory */
+  path: string;
+  /** Database name (default: "powermem") */
+  database?: string;
+  /** Collection name (default: "memories") */
+  collectionName?: string;
+  /** Distance metric (default: "cosine") */
+  distance?: 'cosine' | 'l2' | 'inner_product';
+  /** Embedding dimension — required for HNSW index creation */
+  dimension?: number;
 }

@@ -17,7 +17,7 @@ import type {
 import type { AddResult, SearchResult, MemoryListResult } from '../../types/responses.js';
 import type { RerankerFn } from '../../types/options.js';
 import { SQLiteStore } from './store.js';
-import type { VectorStoreFilter, VectorStoreRecord, VectorStoreSearchMatch } from './vector-store.js';
+import type { VectorStore, VectorStoreFilter, VectorStoreRecord } from './vector-store.js';
 import { Embedder } from './embedder.js';
 import { Inferrer } from './inferrer.js';
 import { SnowflakeIDGenerator } from './snowflake.js';
@@ -29,6 +29,7 @@ export interface NativeProviderOptions {
   embeddings?: Embeddings;
   llm?: BaseChatModel;
   dbPath?: string;
+  store?: VectorStore;
   customFactExtractionPrompt?: string;
   customUpdateMemoryPrompt?: string;
   fallbackToSimpleAdd?: boolean;
@@ -70,13 +71,13 @@ function toMemoryRecord(rec: VectorStoreRecord): MemoryRecord {
 }
 
 export class NativeProvider implements MemoryProvider {
-  private readonly store: SQLiteStore;
+  private readonly store: VectorStore;
   private readonly embedder: Embedder;
   private readonly inferrer?: Inferrer;
   private readonly idGen = new SnowflakeIDGenerator();
   private readonly config: Config;
 
-  private constructor(store: SQLiteStore, embedder: Embedder, inferrer?: Inferrer, config?: Partial<Config>) {
+  private constructor(store: VectorStore, embedder: Embedder, inferrer?: Inferrer, config?: Partial<Config>) {
     this.store = store;
     this.embedder = embedder;
     this.inferrer = inferrer;
@@ -89,12 +90,18 @@ export class NativeProvider implements MemoryProvider {
   }
 
   static async create(options: NativeProviderOptions = {}): Promise<NativeProvider> {
-    const dbPath = options.dbPath ?? path.join(getDefaultHomeDir(), 'memories.db');
-    const dbDir = path.dirname(dbPath);
-    if (!fs.existsSync(dbDir)) {
-      fs.mkdirSync(dbDir, { recursive: true });
+    // Use injected store or create default SQLiteStore
+    let store: VectorStore;
+    if (options.store) {
+      store = options.store;
+    } else {
+      const dbPath = options.dbPath ?? path.join(getDefaultHomeDir(), 'memories.db');
+      const dbDir = path.dirname(dbPath);
+      if (!fs.existsSync(dbDir)) {
+        fs.mkdirSync(dbDir, { recursive: true });
+      }
+      store = new SQLiteStore(dbPath);
     }
-    const store = new SQLiteStore(dbPath);
 
     const embeddingsInstance = options.embeddings ?? (await createEmbeddingsFromEnv());
     const embedder = new Embedder(embeddingsInstance);
@@ -171,7 +178,7 @@ export class NativeProvider implements MemoryProvider {
     const id = this.idGen.nextId();
     const embedding = await this.embedder.embed(params.content);
     const payload = this.buildPayload(params.content, params);
-    this.store.insert(id, embedding, payload);
+    await this.store.insert(id, embedding, payload);
     return {
       memories: [this.buildRecord(id, params.content, payload, params)],
       message: 'Memory created successfully',
@@ -189,11 +196,10 @@ export class NativeProvider implements MemoryProvider {
       userId: params.userId, agentId: params.agentId, runId: params.runId,
     };
 
-    // Search for similar existing memories
     const existingMap = new Map<string, { id: string; text: string; score: number }>();
     for (const fact of facts) {
       const factEmbedding = await this.embedder.embed(fact);
-      const matches = this.store.search(factEmbedding, filters, 5);
+      const matches = await this.store.search(factEmbedding, filters, 5);
       for (const match of matches) {
         const existing = existingMap.get(match.id);
         if (!existing || match.score > existing.score) {
@@ -213,7 +219,7 @@ export class NativeProvider implements MemoryProvider {
         const id = this.idGen.nextId();
         const embedding = await this.embedder.embed(fact);
         const payload = this.buildPayload(fact, params);
-        this.store.insert(id, embedding, payload);
+        await this.store.insert(id, embedding, payload);
         resultMemories.push(this.buildRecord(id, fact, payload, params));
       }
       const count = resultMemories.length;
@@ -240,22 +246,22 @@ export class NativeProvider implements MemoryProvider {
           const id = this.idGen.nextId();
           const embedding = await this.embedder.embed(action.text);
           const payload = this.buildPayload(action.text, params);
-          this.store.insert(id, embedding, payload);
+          await this.store.insert(id, embedding, payload);
           resultMemories.push(this.buildRecord(id, action.text, payload, params));
           break;
         }
         case 'UPDATE': {
           const realId = tempToReal.get(action.id) ?? action.id;
-          const existing = this.store.getById(realId);
+          const existing = await this.store.getById(realId);
           const embedding = await this.embedder.embed(action.text);
           const payload = this.buildPayload(action.text, params, existing?.createdAt);
-          this.store.update(realId, embedding, payload);
+          await this.store.update(realId, embedding, payload);
           resultMemories.push(this.buildRecord(realId, action.text, payload, params));
           break;
         }
         case 'DELETE': {
           const realId = tempToReal.get(action.id) ?? action.id;
-          this.store.remove(realId);
+          await this.store.remove(realId);
           break;
         }
         case 'NONE':
@@ -287,7 +293,7 @@ export class NativeProvider implements MemoryProvider {
     };
     const limit = params.limit ?? 30;
 
-    let matches = this.store.search(queryEmbedding, filters, limit);
+    let matches = await this.store.search(queryEmbedding, filters, limit);
 
     // Ebbinghaus decay
     if (this.config.enableDecay) {
@@ -310,7 +316,7 @@ export class NativeProvider implements MemoryProvider {
     // Increment access counts
     const matchIds = matches.map((m) => m.id);
     if (matchIds.length > 0) {
-      this.store.incrementAccessCountBatch(matchIds);
+      await this.store.incrementAccessCountBatch(matchIds);
     }
 
     let results: import('../../types/responses.js').SearchHit[] = matches.map((m) => ({
@@ -331,16 +337,16 @@ export class NativeProvider implements MemoryProvider {
   // ─── Get ────────────────────────────────────────────────────────────────
 
   async get(memoryId: string): Promise<MemoryRecord | null> {
-    const rec = this.store.getById(memoryId);
+    const rec = await this.store.getById(memoryId);
     if (!rec) return null;
-    this.store.incrementAccessCount(memoryId);
+    await this.store.incrementAccessCount(memoryId);
     return toMemoryRecord(rec);
   }
 
   // ─── Update ─────────────────────────────────────────────────────────────
 
   async update(memoryId: string, params: UpdateParams): Promise<MemoryRecord> {
-    const existing = this.store.getById(memoryId);
+    const existing = await this.store.getById(memoryId);
     if (!existing) throw new Error(`Memory not found: ${memoryId}`);
 
     const content = params.content ?? existing.content;
@@ -365,7 +371,7 @@ export class NativeProvider implements MemoryProvider {
       metadata: metadata ?? {},
     };
 
-    this.store.update(memoryId, embedding, payload);
+    await this.store.update(memoryId, embedding, payload);
 
     return {
       id: memoryId, memoryId, content,
@@ -389,7 +395,7 @@ export class NativeProvider implements MemoryProvider {
     const filters: VectorStoreFilter = { userId: params.userId, agentId: params.agentId };
     const limit = params.limit ?? 100;
     const offset = params.offset ?? 0;
-    const { records, total } = this.store.list(filters, limit, offset, {
+    const { records, total } = await this.store.list(filters, limit, offset, {
       sortBy: params.sortBy,
       order: params.order,
     });
@@ -423,7 +429,7 @@ export class NativeProvider implements MemoryProvider {
   }
 
   async deleteAll(params: FilterParams = {}): Promise<boolean> {
-    this.store.removeAll({ userId: params.userId, agentId: params.agentId });
+    await this.store.removeAll({ userId: params.userId, agentId: params.agentId });
     return true;
   }
 
@@ -432,6 +438,6 @@ export class NativeProvider implements MemoryProvider {
   }
 
   async close(): Promise<void> {
-    this.store.close();
+    await this.store.close();
   }
 }

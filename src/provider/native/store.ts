@@ -57,12 +57,12 @@ export class SQLiteStore implements VectorStore {
     };
   }
 
-  insert(id: string, vector: number[], payload: Record<string, unknown>): void {
+  async insert(id: string, vector: number[], payload: Record<string, unknown>): Promise<void> {
     const stmt = this.db.prepare('INSERT INTO memories (id, vector, payload) VALUES (?, ?, ?)');
     stmt.run(id, JSON.stringify(vector), JSON.stringify(payload));
   }
 
-  getById(id: string, userId?: string, agentId?: string): VectorStoreRecord | null {
+  async getById(id: string, userId?: string, agentId?: string): Promise<VectorStoreRecord | null> {
     const row = this.db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as
       | { id: string; vector: string; payload: string; created_at: string }
       | undefined;
@@ -74,22 +74,22 @@ export class SQLiteStore implements VectorStore {
     return record;
   }
 
-  update(id: string, vector: number[], payload: Record<string, unknown>): void {
+  async update(id: string, vector: number[], payload: Record<string, unknown>): Promise<void> {
     const stmt = this.db.prepare('UPDATE memories SET vector = ?, payload = ? WHERE id = ?');
     stmt.run(JSON.stringify(vector), JSON.stringify(payload), id);
   }
 
-  remove(id: string): boolean {
+  async remove(id: string): Promise<boolean> {
     const result = this.db.prepare('DELETE FROM memories WHERE id = ?').run(id);
     return result.changes > 0;
   }
 
-  list(
+  async list(
     filters: VectorStoreFilter = {},
     limit = 100,
     offset = 0,
     options: VectorStoreListOptions = {}
-  ): { records: VectorStoreRecord[]; total: number } {
+  ): Promise<{ records: VectorStoreRecord[]; total: number }> {
     const { where, params } = this.buildWhereClause(filters);
 
     const countRow = this.db
@@ -118,7 +118,7 @@ export class SQLiteStore implements VectorStore {
     return { records: rows.map((r) => this.toRecord(r)), total: countRow.cnt };
   }
 
-  search(queryVector: number[], filters: VectorStoreFilter = {}, limit = 30): VectorStoreSearchMatch[] {
+  async search(queryVector: number[], filters: VectorStoreFilter = {}, limit = 30): Promise<VectorStoreSearchMatch[]> {
     const { where, params } = this.buildWhereClause(filters);
 
     const rows = this.db
@@ -146,7 +146,7 @@ export class SQLiteStore implements VectorStore {
     return scored.slice(0, limit);
   }
 
-  count(filters: VectorStoreFilter = {}): number {
+  async count(filters: VectorStoreFilter = {}): Promise<number> {
     const { where, params } = this.buildWhereClause(filters);
     const row = this.db
       .prepare(`SELECT COUNT(*) as cnt FROM memories${where}`)
@@ -154,7 +154,7 @@ export class SQLiteStore implements VectorStore {
     return row.cnt;
   }
 
-  incrementAccessCount(id: string): void {
+  async incrementAccessCount(id: string): Promise<void> {
     this.db.prepare(`
       UPDATE memories
       SET payload = json_set(payload, '$.access_count',
@@ -164,7 +164,7 @@ export class SQLiteStore implements VectorStore {
     `).run(id);
   }
 
-  incrementAccessCountBatch(ids: string[]): void {
+  async incrementAccessCountBatch(ids: string[]): Promise<void> {
     if (ids.length === 0) return;
     const placeholders = ids.map(() => '?').join(',');
     this.db.prepare(`
@@ -176,12 +176,12 @@ export class SQLiteStore implements VectorStore {
     `).run(...ids);
   }
 
-  removeAll(filters: VectorStoreFilter = {}): void {
+  async removeAll(filters: VectorStoreFilter = {}): Promise<void> {
     const { where, params } = this.buildWhereClause(filters);
     this.db.prepare(`DELETE FROM memories${where}`).run(...params);
   }
 
-  close(): void {
+  async close(): Promise<void> {
     this.db.close();
   }
 

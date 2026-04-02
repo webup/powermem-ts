@@ -2,6 +2,7 @@ import { HttpProvider } from './provider/http-provider.js';
 import { NativeProvider } from './provider/native/index.js';
 import { loadEnvFile } from './utils/env.js';
 import type { MemoryProvider } from './provider/index.js';
+import type { VectorStore } from './provider/native/vector-store.js';
 import type { InitOptions, MemoryOptions } from './types/options.js';
 import type {
   AddParams,
@@ -31,10 +32,18 @@ export class Memory {
       return new Memory(provider);
     }
 
+    // Create SeekDB store if configured
+    let store: VectorStore | undefined;
+    if (options.seekdb) {
+      const { SeekDBStore } = await import('./provider/native/seekdb-store.js');
+      store = await SeekDBStore.create(options.seekdb);
+    }
+
     const provider = await NativeProvider.create({
       embeddings: options.embeddings,
       llm: options.llm,
       dbPath: options.dbPath,
+      store,
       customFactExtractionPrompt: options.customFactExtractionPrompt,
       customUpdateMemoryPrompt: options.customUpdateMemoryPrompt,
       fallbackToSimpleAdd: options.fallbackToSimpleAdd,

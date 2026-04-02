@@ -1,5 +1,7 @@
 export { Memory } from './memory.js';
 export { NativeProvider } from './provider/native/index.js';
+export { SeekDBStore } from './provider/native/seekdb-store.js';
+export type { SeekDBStoreOptions } from './provider/native/seekdb-store.js';
 
 export type { MemoryProvider } from './provider/index.js';
 export type {
@@ -28,7 +30,7 @@ export type {
   MemoryListResult,
 } from './types/responses.js';
 
-export type { InitOptions, MemoryOptions, RerankerFn } from './types/options.js';
+export type { InitOptions, MemoryOptions, RerankerFn, SeekDBOptions } from './types/options.js';
 
 export {
   PowerMemError,

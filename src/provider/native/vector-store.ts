@@ -1,8 +1,8 @@
 /**
- * VectorStore interface — abstract storage layer.
+ * VectorStore interface — abstract async storage layer.
  *
- * SQLiteStore is the current implementation.
- * Future backends (OceanBase, PgVector) implement this same interface.
+ * SQLiteStore and SeekDBStore are the current implementations.
+ * Future backends (PgVector, etc.) implement this same interface.
  */
 
 export interface VectorStoreRecord {
@@ -43,24 +43,24 @@ export interface VectorStoreListOptions {
 }
 
 export interface VectorStore {
-  insert(id: string, vector: number[], payload: Record<string, unknown>): void;
-  getById(id: string, userId?: string, agentId?: string): VectorStoreRecord | null;
-  update(id: string, vector: number[], payload: Record<string, unknown>): void;
-  remove(id: string): boolean;
+  insert(id: string, vector: number[], payload: Record<string, unknown>): Promise<void>;
+  getById(id: string, userId?: string, agentId?: string): Promise<VectorStoreRecord | null>;
+  update(id: string, vector: number[], payload: Record<string, unknown>): Promise<void>;
+  remove(id: string): Promise<boolean>;
   list(
     filters?: VectorStoreFilter,
     limit?: number,
     offset?: number,
     options?: VectorStoreListOptions
-  ): { records: VectorStoreRecord[]; total: number };
+  ): Promise<{ records: VectorStoreRecord[]; total: number }>;
   search(
     queryVector: number[],
     filters?: VectorStoreFilter,
     limit?: number
-  ): VectorStoreSearchMatch[];
-  count(filters?: VectorStoreFilter): number;
-  incrementAccessCount(id: string): void;
-  incrementAccessCountBatch(ids: string[]): void;
-  removeAll(filters?: VectorStoreFilter): void;
-  close(): void;
+  ): Promise<VectorStoreSearchMatch[]>;
+  count(filters?: VectorStoreFilter): Promise<number>;
+  incrementAccessCount(id: string): Promise<void>;
+  incrementAccessCountBatch(ids: string[]): Promise<void>;
+  removeAll(filters?: VectorStoreFilter): Promise<void>;
+  close(): Promise<void>;
 }
