@@ -7,6 +7,9 @@ import { Command } from 'commander';
 import { VERSION } from '../version.js';
 import { registerConfigCommands } from './commands/config.js';
 import { registerMemoryCommands } from './commands/memory.js';
+import { registerStatsCommand } from './commands/stats.js';
+import { registerManageCommands } from './commands/manage.js';
+import { registerShellCommand } from './commands/interactive.js';
 
 const program = new Command();
 
@@ -20,5 +23,8 @@ program
 
 registerConfigCommands(program);
 registerMemoryCommands(program);
+registerStatsCommand(program);
+registerManageCommands(program);
+registerShellCommand(program);
 
 program.parse();

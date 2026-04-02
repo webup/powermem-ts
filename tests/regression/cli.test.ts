@@ -71,4 +71,41 @@ describe('CLI smoke tests', () => {
     expect(output).toContain('LLM');
     expect(output).toContain('Embedder');
   });
+
+  // ── Phase B: stats, manage, shell ───────────────────────────────────
+
+  it('pmem stats --help shows stats command', () => {
+    const output = runCli('stats --help');
+    expect(output).toContain('statistics');
+  });
+
+  it('pmem manage --help shows manage commands', () => {
+    const output = runCli('manage --help');
+    expect(output).toContain('backup');
+    expect(output).toContain('restore');
+    expect(output).toContain('cleanup');
+  });
+
+  it('pmem shell --help shows shell command', () => {
+    const output = runCli('shell --help');
+    expect(output).toContain('Interactive');
+  });
+
+  it('pmem manage backup --help shows backup options', () => {
+    const output = runCli('manage backup --help');
+    expect(output).toContain('--output');
+    expect(output).toContain('--user-id');
+    expect(output).toContain('--limit');
+  });
+
+  it('pmem manage restore --help shows restore options', () => {
+    const output = runCli('manage restore --help');
+    expect(output).toContain('--dry-run');
+  });
+
+  it('pmem manage cleanup --help shows cleanup options', () => {
+    const output = runCli('manage cleanup --help');
+    expect(output).toContain('--strategy');
+    expect(output).toContain('--threshold');
+  });
 });
