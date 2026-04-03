@@ -13,10 +13,12 @@ import { loadServerConfig, type ServerConfig } from './config.js';
 import { createAuthMiddleware } from './middleware/auth.js';
 import { createRateLimitMiddleware } from './middleware/rate-limit.js';
 import { createMetricsMiddleware } from './middleware/metrics.js';
+import { createLoggingMiddleware } from './middleware/logging.js';
 import { createSystemRouter } from './routers/system.js';
 import { createMemoriesRouter } from './routers/memories.js';
 import { createAgentsRouter } from './routers/agents.js';
 import { createUsersRouter } from './routers/users.js';
+import { buildOpenAPISpec } from './openapi.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -46,6 +48,7 @@ export async function createDashboardServer(options: DashboardServerOptions = {}
   }
 
   // ─── Middleware ─────────────────────────────────────────────────────
+  app.use(createLoggingMiddleware());
   app.use(createMetricsMiddleware());
   app.use(createAuthMiddleware(config));
   app.use(createRateLimitMiddleware(config));
@@ -65,72 +68,7 @@ export async function createDashboardServer(options: DashboardServerOptions = {}
 
   // ─── OpenAPI / Docs ────────────────────────────────────────────────
   app.get('/openapi.json', (_req, res) => {
-    res.json({
-      openapi: '3.0.3',
-      info: { title: 'PowerMem API', version: VERSION, description: 'PowerMem TypeScript REST API' },
-      servers: [{ url: '/api/v1' }],
-      paths: {
-        '/system/health': { get: { summary: 'Health check', tags: ['system'], responses: { '200': { description: 'OK' } } } },
-        '/system/status': { get: { summary: 'System status', tags: ['system'], responses: { '200': { description: 'Status info' } } } },
-        '/system/metrics': { get: { summary: 'Prometheus metrics', tags: ['system'], responses: { '200': { description: 'Prometheus text' } } } },
-        '/memories': {
-          get: { summary: 'List memories', tags: ['memories'], parameters: [
-            { name: 'user_id', in: 'query', schema: { type: 'string' } },
-            { name: 'agent_id', in: 'query', schema: { type: 'string' } },
-            { name: 'limit', in: 'query', schema: { type: 'integer', default: 20 } },
-            { name: 'offset', in: 'query', schema: { type: 'integer', default: 0 } },
-          ], responses: { '200': { description: 'Memory list' } } },
-          post: { summary: 'Create memory', tags: ['memories'], responses: { '200': { description: 'Created' } } },
-          delete: { summary: 'Delete all memories', tags: ['memories'], responses: { '200': { description: 'Deleted' } } },
-        },
-        '/memories/{id}': {
-          get: { summary: 'Get memory by ID', tags: ['memories'], responses: { '200': { description: 'Memory' }, '404': { description: 'Not found' } } },
-          put: { summary: 'Update memory', tags: ['memories'], responses: { '200': { description: 'Updated' } } },
-          delete: { summary: 'Delete memory', tags: ['memories'], responses: { '200': { description: 'Deleted' } } },
-        },
-        '/memories/search': {
-          get: { summary: 'Search via query params', tags: ['memories'], responses: { '200': { description: 'Results' } } },
-          post: { summary: 'Search via body', tags: ['memories'], responses: { '200': { description: 'Results' } } },
-        },
-        '/memories/batch': {
-          post: { summary: 'Batch create', tags: ['memories'], responses: { '200': { description: 'Created' } } },
-          put: { summary: 'Batch update', tags: ['memories'], responses: { '200': { description: 'Updated' } } },
-          delete: { summary: 'Batch delete', tags: ['memories'], responses: { '200': { description: 'Deleted' } } },
-        },
-        '/memories/stats': { get: { summary: 'Memory statistics', tags: ['memories'], responses: { '200': { description: 'Stats' } } } },
-        '/memories/count': { get: { summary: 'Memory count', tags: ['memories'], responses: { '200': { description: 'Count' } } } },
-        '/memories/users': { get: { summary: 'Unique users', tags: ['memories'], responses: { '200': { description: 'Users' } } } },
-        '/memories/export': { get: { summary: 'Export memories', tags: ['memories'], responses: { '200': { description: 'Export' } } } },
-        '/memories/import': { post: { summary: 'Import memories', tags: ['memories'], responses: { '200': { description: 'Import result' } } } },
-        '/agents/{agentId}/memories': {
-          get: { summary: 'List agent memories', tags: ['agents'], responses: { '200': { description: 'Memories' } } },
-          post: { summary: 'Add agent memory', tags: ['agents'], responses: { '200': { description: 'Created' } } },
-        },
-        '/agents/{agentId}/memories/share': {
-          get: { summary: 'Get shared memories', tags: ['agents'], responses: { '200': { description: 'Shared' } } },
-          post: { summary: 'Share memories', tags: ['agents'], responses: { '200': { description: 'Shared count' } } },
-        },
-        '/users/profiles': { get: { summary: 'List user profiles', tags: ['users'], responses: { '200': { description: 'Profiles' } } } },
-        '/users/{userId}/profile': {
-          get: { summary: 'Get user profile', tags: ['users'], responses: { '200': { description: 'Profile' } } },
-          post: { summary: 'Extract profile', tags: ['users'], responses: { '200': { description: 'Extraction result' } } },
-          delete: { summary: 'Delete profile', tags: ['users'], responses: { '200': { description: 'Deleted' } } },
-        },
-        '/users/{userId}/memories': {
-          get: { summary: 'List user memories', tags: ['users'], responses: { '200': { description: 'Memories' } } },
-          delete: { summary: 'Delete user memories', tags: ['users'], responses: { '200': { description: 'Deleted' } } },
-        },
-        '/users/{userId}/memories/{memoryId}': {
-          put: { summary: 'Update user memory', tags: ['users'], responses: { '200': { description: 'Updated' } } },
-        },
-      },
-      components: {
-        securitySchemes: {
-          ApiKeyHeader: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
-          ApiKeyQuery: { type: 'apiKey', in: 'query', name: 'api_key' },
-        },
-      },
-    });
+    res.json(buildOpenAPISpec(VERSION));
   });
 
   app.get('/docs', (_req, res) => {

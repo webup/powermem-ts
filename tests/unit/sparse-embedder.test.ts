@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { BM25SparseEmbedder, tokenize, sparseDotProduct, ENGLISH_STOPWORDS } from '../../src/integrations/embeddings/sparse.js';
+import { BM25SparseEmbedder, tokenize, tokenizeCJK, sparseDotProduct, ENGLISH_STOPWORDS, CHINESE_STOPWORDS } from '../../src/integrations/embeddings/sparse.js';
 
 describe('BM25SparseEmbedder', () => {
   it('produces sparse vectors with indices and values', async () => {
@@ -71,5 +71,48 @@ describe('tokenize', () => {
 
   it('handles empty string', () => {
     expect(tokenize('')).toEqual([]);
+  });
+});
+
+describe('tokenizeCJK', () => {
+  it('splits Chinese characters individually', () => {
+    const tokens = tokenizeCJK('你好世界');
+    expect(tokens).toEqual(['你', '好', '世', '界']);
+  });
+
+  it('handles mixed CJK + Latin text', () => {
+    const tokens = tokenizeCJK('Hello 你好 World');
+    expect(tokens).toContain('hello');
+    expect(tokens).toContain('你');
+    expect(tokens).toContain('好');
+    expect(tokens).toContain('world');
+  });
+
+  it('removes Chinese stopwords', () => {
+    // 我喜欢编程 → 我,喜,欢,编,程 — 我 is stopword, rest are not
+    const tokens = tokenizeCJK('我喜欢编程', CHINESE_STOPWORDS);
+    expect(tokens).not.toContain('我');
+    expect(tokens).toContain('喜');
+    expect(tokens).toContain('编');
+    expect(tokens).toContain('程');
+  });
+
+  it('handles Japanese hiragana and katakana', () => {
+    const tokens = tokenizeCJK('こんにちは');
+    expect(tokens.length).toBe(5);
+  });
+
+  it('handles Korean', () => {
+    const tokens = tokenizeCJK('안녕하세요');
+    expect(tokens.length).toBeGreaterThan(0);
+  });
+
+  it('BM25 works with CJK tokenizer', async () => {
+    const bm25 = new BM25SparseEmbedder({
+      tokenizer: (text) => tokenizeCJK(text, CHINESE_STOPWORDS),
+    });
+    bm25.fit(['TypeScript编程语言', '天气很好']);
+    const q = await bm25.embedSparse('编程');
+    expect(q.indices.length).toBeGreaterThan(0);
   });
 });

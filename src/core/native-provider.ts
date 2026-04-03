@@ -26,7 +26,7 @@ import { StorageAdapter } from '../storage/adapter.js';
 import { MemoryOptimizer } from '../intelligence/memory-optimizer.js';
 import type { SubStorageRouter } from '../storage/sub-storage.js';
 import { calculateStatsFromMemories } from '../utils/stats.js';
-import { extractTextFromContent } from '../utils/messages.js';
+import { extractTextFromContent, hasVisionContent, hasAudioContent, parseVisionMessages, parseAudioMessages } from '../utils/messages.js';
 import { createEmbeddingsFromEnv } from '../integrations/embeddings/factory.js';
 import { createLLMFromEnv } from '../integrations/llm/factory.js';
 import { getDefaultHomeDir } from '../utils/platform.js';
@@ -83,19 +83,21 @@ export class NativeProvider implements MemoryProvider {
   private readonly store: VectorStore;
   private readonly embedder: Embedder;
   private readonly inferrer?: Inferrer;
+  private readonly llmInstance?: BaseChatModel;
   private readonly idGen = new SnowflakeIDGenerator();
   private readonly config: Config;
   private readonly intelligenceManager?: IntelligenceManager;
   private readonly graphStore?: GraphStoreBase;
   private readonly subStorageRouter?: SubStorageRouter;
 
-  private constructor(store: VectorStore, embedder: Embedder, inferrer?: Inferrer, config?: Partial<Config>, intelligenceManager?: IntelligenceManager, graphStore?: GraphStoreBase, subStorageRouter?: SubStorageRouter) {
+  private constructor(store: VectorStore, embedder: Embedder, inferrer?: Inferrer, config?: Partial<Config>, intelligenceManager?: IntelligenceManager, graphStore?: GraphStoreBase, subStorageRouter?: SubStorageRouter, llmInstance?: BaseChatModel) {
     this.store = store;
     this.embedder = embedder;
     this.inferrer = inferrer;
     this.intelligenceManager = intelligenceManager;
     this.graphStore = graphStore;
     this.subStorageRouter = subStorageRouter;
+    this.llmInstance = llmInstance;
     this.config = {
       fallbackToSimpleAdd: config?.fallbackToSimpleAdd ?? false,
       reranker: config?.reranker,
@@ -122,12 +124,13 @@ export class NativeProvider implements MemoryProvider {
     const embedder = new Embedder(embeddingsInstance);
 
     let inferrer: Inferrer | undefined;
-    if (options.llm) {
-      inferrer = new Inferrer(options.llm);
+    let resolvedLlm: BaseChatModel | undefined = options.llm;
+    if (resolvedLlm) {
+      inferrer = new Inferrer(resolvedLlm);
     } else {
       try {
-        const llm = await createLLMFromEnv();
-        inferrer = new Inferrer(llm);
+        resolvedLlm = await createLLMFromEnv();
+        inferrer = new Inferrer(resolvedLlm);
       } catch {
         // LLM not configured
       }
@@ -153,7 +156,7 @@ export class NativeProvider implements MemoryProvider {
       reranker: options.reranker,
       enableDecay: options.enableDecay,
       decayWeight: options.decayWeight,
-    }, intelligenceManager, options.graphStore, options.subStorageRouter);
+    }, intelligenceManager, options.graphStore, options.subStorageRouter, resolvedLlm);
   }
 
   /** Resolve the VectorStore to use — routes via SubStorageRouter if present. */
@@ -208,9 +211,47 @@ export class NativeProvider implements MemoryProvider {
     };
   }
 
+  /** Extract text from content, processing vision/audio via LLM if available. */
+  private async resolveTextContent(content: import('../types/memory.js').MemoryContent): Promise<string> {
+    if (typeof content === 'string') return content;
+
+    let text = extractTextFromContent(content);
+
+    // Vision: describe images via LLM if available
+    if (hasVisionContent(content) && this.llmInstance) {
+      try {
+        text = await parseVisionMessages(content, async (msgs) => {
+          const { HumanMessage } = await import('@langchain/core/messages');
+          const resp = await this.llmInstance!.invoke([new HumanMessage({ content: msgs[0].content as any })]);
+          return typeof resp.content === 'string' ? resp.content : JSON.stringify(resp.content);
+        });
+      } catch { /* fall back to basic extraction */ }
+    }
+
+    // Audio: transcribe via external service if configured
+    if (hasAudioContent(content)) {
+      try {
+        text = await parseAudioMessages(content, async (audioUrl) => {
+          // Use Whisper-compatible API if configured
+          const whisperUrl = process.env.WHISPER_API_URL ?? process.env.ASR_API_URL;
+          if (!whisperUrl) return '[audio: no ASR configured]';
+          const res = await fetch(whisperUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: audioUrl }),
+          });
+          const data = await res.json() as { text?: string };
+          return data.text ?? '[audio: transcription failed]';
+        });
+      } catch { /* fall back to basic extraction */ }
+    }
+
+    return text;
+  }
+
   private async simpleAdd(params: AddParams): Promise<AddResult> {
     const id = this.idGen.nextId();
-    const textContent = extractTextFromContent(params.content);
+    const textContent = await this.resolveTextContent(params.content);
     const embedding = await this.embedder.embed(textContent);
     // Enrich metadata with importance score via IntelligenceManager
     const enrichedMetadata = this.intelligenceManager
@@ -233,7 +274,7 @@ export class NativeProvider implements MemoryProvider {
   }
 
   private async intelligentAdd(params: AddParams): Promise<AddResult> {
-    const textContent = extractTextFromContent(params.content);
+    const textContent = await this.resolveTextContent(params.content);
     const facts = await this.inferrer!.extractFacts(textContent);
     if (facts.length === 0) {
       if (this.config.fallbackToSimpleAdd) return this.simpleAdd(params);

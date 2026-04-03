@@ -26,7 +26,7 @@ export type {
   BatchOptions,
 } from './types/memory.js';
 
-export { extractTextFromContent, hasVisionContent, hasAudioContent, extractImageUrls } from './utils/messages.js';
+export { extractTextFromContent, hasVisionContent, hasAudioContent, extractImageUrls, parseVisionMessages, parseAudioMessages } from './utils/messages.js';
 
 export type {
   AddResult,
@@ -65,7 +65,7 @@ export { createLLM, createLLMFromEnv } from './integrations/index.js';
 export { OpenAICompatReranker, createReranker, createRerankerFromEnv, createRerankerFnFromConfig } from './integrations/index.js';
 export type { RerankProvider, BaseRerankConfig } from './integrations/index.js';
 export type { SparseEmbedding, SparseEmbedder, BM25Config } from './integrations/embeddings/sparse.js';
-export { BM25SparseEmbedder, tokenize, sparseDotProduct, ENGLISH_STOPWORDS } from './integrations/embeddings/sparse.js';
+export { BM25SparseEmbedder, tokenize, tokenizeCJK, sparseDotProduct, ENGLISH_STOPWORDS, CHINESE_STOPWORDS } from './integrations/embeddings/sparse.js';
 
 // ─── Intelligence ─────────────────────────────────────────────────────────
 export { MemoryOptimizer, ImportanceEvaluator, IntelligenceManager } from './intelligence/index.js';

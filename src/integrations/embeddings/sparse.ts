@@ -34,6 +34,45 @@ export function tokenize(text: string, stopwords?: Set<string>): string[] {
   return tokens;
 }
 
+/**
+ * CJK-aware tokenizer — splits Chinese/Japanese/Korean text into individual characters
+ * and Latin text into words. Works without native dependencies.
+ *
+ * For higher-quality Chinese segmentation, pass a custom tokenizer
+ * (e.g. nodejieba) via BM25Config.tokenizer.
+ */
+export function tokenizeCJK(text: string, stopwords?: Set<string>): string[] {
+  const lower = text.toLowerCase();
+  const tokens: string[] = [];
+
+  // Split CJK characters individually, Latin words by whitespace
+  // CJK Unified Ideographs: U+4E00–U+9FFF
+  // CJK Extension A: U+3400–U+4DBF
+  // Hiragana: U+3040–U+309F, Katakana: U+30A0–U+30FF
+  // Hangul: U+AC00–U+D7AF
+  const CJK_REGEX = /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
+
+  let buf = '';
+  for (const ch of lower) {
+    if (CJK_REGEX.test(ch)) {
+      // Flush Latin buffer
+      if (buf.trim()) {
+        for (const w of buf.trim().split(/\s+/).filter(Boolean)) tokens.push(w);
+      }
+      buf = '';
+      tokens.push(ch);
+    } else {
+      buf += ch;
+    }
+  }
+  if (buf.trim()) {
+    for (const w of buf.replace(/[^\p{L}\p{N}\s]/gu, ' ').trim().split(/\s+/).filter(Boolean)) tokens.push(w);
+  }
+
+  if (stopwords) return tokens.filter(t => !stopwords.has(t));
+  return tokens;
+}
+
 /** Default English stopwords. */
 export const ENGLISH_STOPWORDS = new Set([
   'a', 'an', 'the', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
@@ -49,6 +88,17 @@ export const ENGLISH_STOPWORDS = new Set([
   'this', 'that', 'these', 'those', 'i', 'me', 'my', 'we', 'our',
   'you', 'your', 'he', 'him', 'his', 'she', 'her', 'it', 'its',
   'they', 'them', 'their', 'about', 'up', 'all', 'also',
+]);
+
+/** Common Chinese stopwords (的、了、在、是、我、有、和、就…). */
+export const CHINESE_STOPWORDS = new Set([
+  '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一',
+  '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着',
+  '没有', '看', '好', '自己', '这', '他', '她', '它', '们', '那',
+  '而', '但', '又', '还', '把', '被', '让', '给', '从', '向', '对',
+  '已', '已经', '所以', '因为', '如果', '虽然', '然后', '可以', '这个',
+  '那个', '什么', '怎么', '为什么', '哪', '吗', '呢', '吧', '啊',
+  '了', '过', '着', '地', '得', '么',
 ]);
 
 // ─── Hash function ───────────────────────────────────────────────────────────

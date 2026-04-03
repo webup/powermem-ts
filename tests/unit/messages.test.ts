@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractTextFromContent, hasVisionContent, hasAudioContent, extractImageUrls, toLangChainMessages } from '../../src/utils/messages.js';
+import { extractTextFromContent, hasVisionContent, hasAudioContent, extractImageUrls, toLangChainMessages, parseVisionMessages, parseAudioMessages } from '../../src/utils/messages.js';
 import type { MessageInput } from '../../src/types/memory.js';
 
 describe('extractTextFromContent', () => {
@@ -101,5 +101,69 @@ describe('toLangChainMessages', () => {
       { role: 'user', content: 'hi' },
     ];
     expect(toLangChainMessages(msgs)).toHaveLength(2);
+  });
+});
+
+describe('parseVisionMessages', () => {
+  it('returns string as-is', async () => {
+    const result = await parseVisionMessages('hello', async () => 'unused');
+    expect(result).toBe('hello');
+  });
+
+  it('returns text-only messages without calling LLM', async () => {
+    const msgs: MessageInput[] = [{ role: 'user', content: 'just text' }];
+    const result = await parseVisionMessages(msgs, async () => { throw new Error('should not be called'); });
+    expect(result).toBe('just text');
+  });
+
+  it('calls LLM for image parts and inlines description', async () => {
+    const msgs: MessageInput[] = [{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'What is this?' },
+        { type: 'image_url', image_url: { url: 'https://example.com/cat.png' } },
+      ],
+    }];
+    const result = await parseVisionMessages(msgs, async () => 'A cat sitting on a chair');
+    expect(result).toContain('What is this?');
+    expect(result).toContain('[Image description: A cat sitting on a chair]');
+  });
+
+  it('falls back to [image] on LLM failure', async () => {
+    const msgs: MessageInput[] = [{
+      role: 'user',
+      content: [{ type: 'image_url', image_url: { url: 'https://example.com/x.png' } }],
+    }];
+    const result = await parseVisionMessages(msgs, async () => { throw new Error('LLM down'); });
+    expect(result).toContain('[image]');
+  });
+});
+
+describe('parseAudioMessages', () => {
+  it('returns string as-is', async () => {
+    const result = await parseAudioMessages('hello', async () => 'unused');
+    expect(result).toBe('hello');
+  });
+
+  it('transcribes audio parts', async () => {
+    const msgs: MessageInput[] = [{
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Listen to this' },
+        { type: 'audio', audio_url: 'https://example.com/speech.mp3' },
+      ],
+    }];
+    const result = await parseAudioMessages(msgs, async () => 'Hello world spoken text');
+    expect(result).toContain('Listen to this');
+    expect(result).toContain('[Transcript: Hello world spoken text]');
+  });
+
+  it('falls back to [audio] on transcription failure', async () => {
+    const msgs: MessageInput[] = [{
+      role: 'user',
+      content: [{ type: 'audio', audio_url: 'https://example.com/x.mp3' }],
+    }];
+    const result = await parseAudioMessages(msgs, async () => { throw new Error('ASR down'); });
+    expect(result).toContain('[audio]');
   });
 });
