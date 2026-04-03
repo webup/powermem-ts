@@ -21,12 +21,13 @@ async function seekdbAvailable(): Promise<boolean> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seekdb-avail-'));
   try {
     const store = await SeekDBStore.create({ path: dir, database: 'check', collectionName: 'c', dimension: 3 });
-    await store.close();
+    // Don't call store.close() — SeekDB embedded may SIGABRT on cleanup
+    // The temp dir cleanup below handles resource release
     return true;
   } catch {
     return false;
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 }
 

@@ -30,9 +30,8 @@ let seekdbAvailable = false;
   try {
     const s = await tryCreateStore(dir, 'check');
     seekdbAvailable = s != null;
-    await s?.close();
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 }
 
