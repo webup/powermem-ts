@@ -138,7 +138,7 @@ export function createMetricsMiddleware() {
       const durationNs = Number(process.hrtime.bigint() - start);
       const durationSec = durationNs / 1e9;
       collector.recordRequest(req.method, req.path, _res.statusCode, durationSec);
-      return (originalEnd as Function).apply(this, args);
+      return (originalEnd as (...a: unknown[]) => unknown).apply(this, args);
     };
 
     next();

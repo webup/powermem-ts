@@ -2,7 +2,7 @@
  * Message parsing utilities — extract text from multimodal message inputs.
  * Mirrors Python powermem's parse_vision_messages and message handling.
  */
-import type { MemoryContent, MessageInput, ContentPart } from '../types/memory.js';
+import type { MemoryContent, ContentPart } from '../types/memory.js';
 
 /**
  * Extract plain text from MemoryContent (string or messages array).
