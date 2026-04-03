@@ -180,14 +180,13 @@ describeIf('SeekDBStore', () => {
   });
 
   it('metadata round-trip', async () => {
-    // SeekDB embedded C engine has limited JSON support in metadata values.
-    // Use flat metadata (no deeply nested objects) for reliable round-trip.
+    // Metadata is base64-encoded to bypass SeekDB C engine JSON limitations
     await store.insert('1', [1, 0, 0], makePayload({
       data: 'with meta',
-      metadata: { key: 'value', priority: 'high' },
+      metadata: { key: 'value', nested: { deep: true }, tags: [1, 2, 3] },
     }));
     const rec = await store.getById('1');
-    expect(rec!.metadata).toEqual({ key: 'value', priority: 'high' });
+    expect(rec!.metadata).toEqual({ key: 'value', nested: { deep: true }, tags: [1, 2, 3] });
   });
 
   it('scope and category round-trip', async () => {
@@ -376,14 +375,13 @@ describeIf('SeekDBStore', () => {
       expect(rec!.content).toBe(content);
     });
 
-    it('simple metadata values round-trip', async () => {
-      // SeekDB embedded has JSON limitations with complex unicode in metadata_json.
-      // Test with ASCII metadata to verify the storage layer works.
+    it('unicode metadata values round-trip', async () => {
+      // Metadata is base64-encoded to handle unicode safely
       await store.insert('1', [1, 0, 0], makePayload({
-        metadata: { tag: 'important', source: 'test' },
+        metadata: { '标签': '重要', emoji: '🏷️' },
       }));
       const rec = await store.getById('1');
-      expect(rec!.metadata).toEqual({ tag: 'important', source: 'test' });
+      expect(rec!.metadata).toEqual({ '标签': '重要', emoji: '🏷️' });
     });
   });
 });

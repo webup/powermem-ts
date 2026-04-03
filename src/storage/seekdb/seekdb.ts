@@ -66,7 +66,8 @@ export class SeekDBStore implements VectorStore {
       scope: (payload.scope as string) ?? '',
       category: (payload.category as string) ?? '',
       access_count: (payload.access_count as number) ?? 0,
-      metadata_json: JSON.stringify(payload.metadata ?? {}),
+      // Base64-encode metadata to avoid SeekDB C engine JSON parsing issues
+      metadata_b64: Buffer.from(JSON.stringify(payload.metadata ?? {})).toString('base64'),
     };
   }
 
@@ -85,7 +86,7 @@ export class SeekDBStore implements VectorStore {
       agentId: m.agent_id || undefined,
       runId: m.run_id || undefined,
       hash: m.hash || undefined,
-      metadata: m.metadata_json ? JSON.parse(m.metadata_json) : undefined,
+      metadata: m.metadata_b64 ? JSON.parse(Buffer.from(m.metadata_b64, 'base64').toString()) : (m.metadata_json ? JSON.parse(m.metadata_json) : undefined),
       embedding: embedding ?? undefined,
       createdAt: m.created_at || new Date().toISOString(),
       updatedAt: m.updated_at || new Date().toISOString(),
@@ -230,7 +231,7 @@ export class SeekDBStore implements VectorStore {
         id: result.ids[0][i],
         content: result.documents?.[0]?.[i] ?? '',
         score: Math.max(0, 1 - distance),
-        metadata: metadata.metadata_json ? JSON.parse(metadata.metadata_json) : undefined,
+        metadata: metadata.metadata_b64 ? JSON.parse(Buffer.from(metadata.metadata_b64, 'base64').toString()) : (metadata.metadata_json ? JSON.parse(metadata.metadata_json) : undefined),
         createdAt: metadata.created_at || undefined,
         updatedAt: metadata.updated_at || undefined,
         accessCount: metadata.access_count ?? 0,
