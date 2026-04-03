@@ -81,7 +81,13 @@ jobs:
           node-version: 20
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libaio1t64 || sudo apt-get install -y libaio1 || true
+        run: |
+          sudo apt-get update && sudo apt-get install -y libaio1t64 || sudo apt-get install -y libaio1 || true
+          # Ubuntu 24.04 ships libaio.so.1t64 but SeekDB expects libaio.so.1
+          if [ ! -f /usr/lib/x86_64-linux-gnu/libaio.so.1 ] && [ -f /usr/lib/x86_64-linux-gnu/libaio.so.1t64 ]; then
+            sudo ln -s libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1
+            echo "Created libaio.so.1 symlink"
+          fi
 
       - name: Install dependencies
         run: npm install
