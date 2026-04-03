@@ -47,7 +47,6 @@ export class PgVectorStore implements VectorStore {
 
     let pg: any;
     try {
-      // @ts-expect-error — pg is an optional dependency
       pg = await import('pg');
     } catch {
       throw new Error(
