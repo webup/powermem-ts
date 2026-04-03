@@ -68,9 +68,15 @@ jobs:
         run: |
           node -e "
             async function test() {
-              const { SeekdbClient } = require('seekdb');
+              const { SeekdbClient, Schema, VectorIndexConfig } = require('seekdb');
               const client = new SeekdbClient({ path: '/tmp/seekdb-ci-check', database: 'test' });
-              const col = await client.getOrCreateCollection({ name: 'check' });
+              const schema = new Schema({
+                vectorIndex: new VectorIndexConfig({
+                  hnsw: { dimension: 3, distance: 'cosine' },
+                  embeddingFunction: null
+                })
+              });
+              const col = await client.getOrCreateCollection({ name: 'check', schema });
               await col.add({ ids: ['1'], documents: ['hello'], embeddings: [[1,0,0]] });
               const result = await col.get({ ids: ['1'] });
               console.log('SeekDB embedded works. IDs:', result.ids);
@@ -97,7 +103,7 @@ jobs:
           node-version: 20
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libaio1
+        run: sudo apt-get update && sudo apt-get install -y libaio1t64 || sudo apt-get install -y libaio1 || true
 
       - name: Install dependencies
         run: npm install

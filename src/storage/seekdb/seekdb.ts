@@ -40,6 +40,7 @@ export class SeekDBStore implements VectorStore {
     const schema = new Schema({
       vectorIndex: new VectorIndexConfig({
         hnsw: { dimension, distance },
+        embeddingFunction: null, // We pass pre-computed embeddings, no auto-vectorization
       }),
     });
 
