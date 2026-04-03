@@ -17,11 +17,16 @@ import type {
 import type { AddResult, SearchResult, MemoryListResult } from '../types/responses.js';
 import type { RerankerFn } from '../types/options.js';
 import { SQLiteStore } from '../storage/sqlite/sqlite.js';
-import type { VectorStore, VectorStoreFilter, VectorStoreRecord } from '../storage/base.js';
+import type { VectorStore, VectorStoreFilter, VectorStoreRecord, GraphStoreBase } from '../storage/base.js';
 import { Embedder } from '../integrations/embeddings/embedder.js';
 import { Inferrer } from './inferrer.js';
 import { SnowflakeIDGenerator } from '../utils/snowflake.js';
-import { computeDecayFactor, applyDecay } from '../intelligence/ebbinghaus.js';
+import { IntelligenceManager, type IntelligenceConfig } from '../intelligence/manager.js';
+import { StorageAdapter } from '../storage/adapter.js';
+import { MemoryOptimizer } from '../intelligence/memory-optimizer.js';
+import type { SubStorageRouter } from '../storage/sub-storage.js';
+import { calculateStatsFromMemories } from '../utils/stats.js';
+import { extractTextFromContent } from '../utils/messages.js';
 import { createEmbeddingsFromEnv } from '../integrations/embeddings/factory.js';
 import { createLLMFromEnv } from '../integrations/llm/factory.js';
 import { getDefaultHomeDir } from '../utils/platform.js';
@@ -37,6 +42,9 @@ export interface NativeProviderOptions {
   reranker?: RerankerFn;
   enableDecay?: boolean;
   decayWeight?: number;
+  intelligenceConfig?: IntelligenceConfig;
+  graphStore?: GraphStoreBase;
+  subStorageRouter?: SubStorageRouter;
 }
 
 interface Config {
@@ -77,11 +85,17 @@ export class NativeProvider implements MemoryProvider {
   private readonly inferrer?: Inferrer;
   private readonly idGen = new SnowflakeIDGenerator();
   private readonly config: Config;
+  private readonly intelligenceManager?: IntelligenceManager;
+  private readonly graphStore?: GraphStoreBase;
+  private readonly subStorageRouter?: SubStorageRouter;
 
-  private constructor(store: VectorStore, embedder: Embedder, inferrer?: Inferrer, config?: Partial<Config>) {
+  private constructor(store: VectorStore, embedder: Embedder, inferrer?: Inferrer, config?: Partial<Config>, intelligenceManager?: IntelligenceManager, graphStore?: GraphStoreBase, subStorageRouter?: SubStorageRouter) {
     this.store = store;
     this.embedder = embedder;
     this.inferrer = inferrer;
+    this.intelligenceManager = intelligenceManager;
+    this.graphStore = graphStore;
+    this.subStorageRouter = subStorageRouter;
     this.config = {
       fallbackToSimpleAdd: config?.fallbackToSimpleAdd ?? false,
       reranker: config?.reranker,
@@ -123,12 +137,31 @@ export class NativeProvider implements MemoryProvider {
       inferrer.setCustomPrompts(options.customFactExtractionPrompt, options.customUpdateMemoryPrompt);
     }
 
+    // Intelligence manager for importance scoring + Ebbinghaus decay
+    let intelligenceManager: IntelligenceManager | undefined;
+    const iConfig = options.intelligenceConfig;
+    if (iConfig?.enabled || options.enableDecay) {
+      intelligenceManager = new IntelligenceManager({
+        enabled: iConfig?.enabled ?? true,
+        enableDecay: iConfig?.enableDecay ?? options.enableDecay ?? false,
+        decayWeight: iConfig?.decayWeight ?? options.decayWeight ?? 0.3,
+      });
+    }
+
     return new NativeProvider(store, embedder, inferrer, {
       fallbackToSimpleAdd: options.fallbackToSimpleAdd,
       reranker: options.reranker,
       enableDecay: options.enableDecay,
       decayWeight: options.decayWeight,
-    });
+    }, intelligenceManager, options.graphStore, options.subStorageRouter);
+  }
+
+  /** Resolve the VectorStore to use — routes via SubStorageRouter if present. */
+  private resolveStore(params: { userId?: string; agentId?: string; scope?: string; metadata?: Record<string, unknown> } = {}): VectorStore {
+    if (this.subStorageRouter) {
+      return this.subStorageRouter.routeToStore(params);
+    }
+    return this.store;
   }
 
   // ─── Add ────────────────────────────────────────────────────────────────
@@ -177,17 +210,31 @@ export class NativeProvider implements MemoryProvider {
 
   private async simpleAdd(params: AddParams): Promise<AddResult> {
     const id = this.idGen.nextId();
-    const embedding = await this.embedder.embed(params.content);
-    const payload = this.buildPayload(params.content, params);
-    await this.store.insert(id, embedding, payload);
+    const textContent = extractTextFromContent(params.content);
+    const embedding = await this.embedder.embed(textContent);
+    // Enrich metadata with importance score via IntelligenceManager
+    const enrichedMetadata = this.intelligenceManager
+      ? this.intelligenceManager.processMetadata(textContent, params.metadata)
+      : params.metadata;
+    const enrichedParams = { ...params, metadata: enrichedMetadata };
+    const payload = this.buildPayload(textContent, enrichedParams);
+    const targetStore = this.resolveStore({ userId: params.userId, agentId: params.agentId, scope: params.scope, metadata: enrichedMetadata });
+    await targetStore.insert(id, embedding, payload);
+    // Graph store (optional, non-blocking)
+    if (this.graphStore) {
+      try {
+        await this.graphStore.add(textContent, { userId: params.userId, agentId: params.agentId });
+      } catch { /* graph store failures are non-fatal */ }
+    }
     return {
-      memories: [this.buildRecord(id, params.content, payload, params)],
+      memories: [this.buildRecord(id, textContent, payload, enrichedParams)],
       message: 'Memory created successfully',
     };
   }
 
   private async intelligentAdd(params: AddParams): Promise<AddResult> {
-    const facts = await this.inferrer!.extractFacts(params.content);
+    const textContent = extractTextFromContent(params.content);
+    const facts = await this.inferrer!.extractFacts(textContent);
     if (facts.length === 0) {
       if (this.config.fallbackToSimpleAdd) return this.simpleAdd(params);
       return { memories: [], message: 'No memories were created (no facts extracted)' };
@@ -294,10 +341,14 @@ export class NativeProvider implements MemoryProvider {
     };
     const limit = params.limit ?? 30;
 
-    let matches = await this.store.search(queryEmbedding, filters, limit);
+    const searchStore = this.resolveStore({ userId: params.userId, agentId: params.agentId });
+    let matches = await searchStore.search(queryEmbedding, filters, limit);
 
-    // Ebbinghaus decay
-    if (this.config.enableDecay) {
+    // Ebbinghaus decay via IntelligenceManager (or inline fallback)
+    if (this.intelligenceManager) {
+      matches = this.intelligenceManager.processSearchResults(matches);
+    } else if (this.config.enableDecay) {
+      const { computeDecayFactor, applyDecay } = await import('../intelligence/ebbinghaus.js');
       for (const match of matches) {
         const decay = computeDecayFactor({
           createdAt: match.createdAt ?? new Date().toISOString(),
@@ -332,7 +383,15 @@ export class NativeProvider implements MemoryProvider {
       results = await this.config.reranker(params.query, results);
     }
 
-    return { results, total: results.length, query: params.query };
+    // Graph relations (optional)
+    let relations: Array<Record<string, unknown>> | undefined;
+    if (this.graphStore) {
+      try {
+        relations = await this.graphStore.search(params.query, { userId: params.userId, agentId: params.agentId }, params.limit);
+      } catch { /* graph search failures are non-fatal */ }
+    }
+
+    return { results, total: results.length, query: params.query, ...(relations ? { relations } : {}) };
   }
 
   // ─── Get ────────────────────────────────────────────────────────────────
@@ -393,7 +452,7 @@ export class NativeProvider implements MemoryProvider {
   // ─── GetAll ─────────────────────────────────────────────────────────────
 
   async getAll(params: GetAllParams = {}): Promise<MemoryListResult> {
-    const filters: VectorStoreFilter = { userId: params.userId, agentId: params.agentId };
+    const filters: VectorStoreFilter = { userId: params.userId, agentId: params.agentId, runId: params.runId };
     const limit = params.limit ?? 100;
     const offset = params.offset ?? 0;
     const { records, total } = await this.store.list(filters, limit, offset, {
@@ -406,7 +465,7 @@ export class NativeProvider implements MemoryProvider {
   // ─── Count ──────────────────────────────────────────────────────────────
 
   async count(params: FilterParams = {}): Promise<number> {
-    return this.store.count({ userId: params.userId, agentId: params.agentId });
+    return this.store.count({ userId: params.userId, agentId: params.agentId, runId: params.runId });
   }
 
   // ─── Batch ──────────────────────────────────────────────────────────────
@@ -430,7 +489,7 @@ export class NativeProvider implements MemoryProvider {
   }
 
   async deleteAll(params: FilterParams = {}): Promise<boolean> {
-    await this.store.removeAll({ userId: params.userId, agentId: params.agentId });
+    await this.store.removeAll({ userId: params.userId, agentId: params.agentId, runId: params.runId });
     return true;
   }
 
@@ -440,5 +499,58 @@ export class NativeProvider implements MemoryProvider {
 
   async close(): Promise<void> {
     await this.store.close();
+  }
+
+  // ─── Extended API ──────────────────────────────────────────────────────
+
+  async getStatistics(params: FilterParams = {}): Promise<Record<string, unknown>> {
+    const adapter = new StorageAdapter(this.store);
+    const filters: VectorStoreFilter = { userId: params.userId, agentId: params.agentId, runId: params.runId };
+    const basic = await adapter.getStatistics(filters);
+    // Enrich with full stats via util
+    const all = await this.getAll({ userId: params.userId, agentId: params.agentId, runId: params.runId, limit: 10000 });
+    const detailed = calculateStatsFromMemories(
+      all.memories as unknown as Array<Record<string, unknown>>
+    );
+    return { ...basic, ...detailed };
+  }
+
+  async getUsers(limit = 1000): Promise<string[]> {
+    const adapter = new StorageAdapter(this.store);
+    return adapter.getUniqueUsers(limit);
+  }
+
+  async optimize(strategy: string = 'exact', userId?: string, threshold = 0.95): Promise<Record<string, unknown>> {
+    const optimizer = new MemoryOptimizer(this.store);
+    const result = await optimizer.deduplicate(strategy as 'exact' | 'semantic', userId, threshold);
+    return result as unknown as Record<string, unknown>;
+  }
+
+  async exportMemories(params: GetAllParams = {}): Promise<MemoryRecord[]> {
+    const result = await this.getAll(params);
+    return result.memories;
+  }
+
+  async importMemories(
+    memories: Array<{ content: string; metadata?: Record<string, unknown>; userId?: string; agentId?: string }>,
+    options: { infer?: boolean } = {},
+  ): Promise<{ imported: number; errors: number }> {
+    let imported = 0;
+    let errors = 0;
+    for (const m of memories) {
+      try {
+        await this.add({
+          content: m.content,
+          metadata: m.metadata,
+          userId: m.userId,
+          agentId: m.agentId,
+          infer: options.infer ?? false,
+        });
+        imported++;
+      } catch {
+        errors++;
+      }
+    }
+    return { imported, errors };
   }
 }
