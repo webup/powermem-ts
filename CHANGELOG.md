@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.3.0 — Full Python Parity (2026-04-03)
+
+Complete TypeScript replication of Python `oceanbase/powermem`. 89 source files, 10 modules, 504 tests.
+
+### Directory Restructure
+- Reorganized from flat `provider/native/` to Python-matching module layout
+- Tests restructured into `unit/`, `integration/`, `regression/`, `e2e/`, `bdd/`
+- Deleted legacy `src/server/` (Python subprocess bridge)
+
+### New Modules
+- **Config system**: `configs.ts` (Zod schemas), `config-loader.ts` (env auto-detection), `settings.ts`, `version.ts`
+- **Storage module**: `VectorStoreFactory` (provider registry), `StorageAdapter`, typed configs
+- **Integrations**: `embeddings/`, `llm/`, `rerank/` base interfaces + factory pattern
+- **Intelligence**: `MemoryOptimizer` (exact + semantic dedup, LLM compression), `ImportanceEvaluator`, `IntelligenceManager`
+- **Prompts**: importance evaluation, optimization, query rewrite, user profile, graph extraction/update/deletion
+- **Utils**: `filter-parser`, `stats` (byType, growth trend, age distribution), `io` (JSON/CSV)
+- **CLI**: `pmem config show|validate|test`, `pmem memory add|search|list|get|delete|delete-all`, `pmem stats`, `pmem manage backup|restore|cleanup`, `pmem shell` (interactive REPL)
+- **Dashboard**: Express server + HTML SPA (overview stats/charts, memories table, settings, dark/light theme)
+- **Agent module**: `AgentMemory`, 7 enums, scope/permission/collaboration strategy interfaces, `ScopeController`, `PermissionController`, `AgentFactory`
+- **User memory**: `UserMemory` (profile-aware search), `QueryRewriter`, `SQLiteUserProfileStore`
+- **Graph store**: `GraphStoreBase` interface, graph prompts
+
+### SeekDB Improvements
+- `embeddingFunction: null` to disable auto-vectorization (pass pre-computed embeddings)
+- Base64-encoded metadata to bypass C engine JSON parser limitations
+- Sequential test execution to avoid concurrent embedded engine init
+- CI: macOS ARM64 (bundled bindings) + Linux x64 (S3 download + libaio symlink)
+
+### Tests (504 total)
+- 370 unit/integration/regression (Node 18/20/22)
+- 63 SeekDB (macOS ARM64 + Linux x64)
+- 21 e2e with real Ollama models
+- 50 BDD (19 CLI + 16 dashboard UI + 15 data correctness)
+
+### CI (7 jobs, all green)
+- Test Node 18/20/22 (Ubuntu)
+- SeekDB macOS ARM64 (macos-14)
+- SeekDB Linux x64 (Ubuntu, S3 download + libaio1t64 symlink)
+- Build (CJS + ESM + DTS + CLI)
+- E2E Ollama (Ubuntu)
+
+---
+
 ## v0.2.0 — Feature Enhancement (2026-04-01)
 
 ### P0 — API Layer

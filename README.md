@@ -1,161 +1,173 @@
 # PowerMem TypeScript SDK
 
-**TypeScript SDK for [PowerMem](https://github.com/oceanbase/powermem) — persistent memory for AI agents and applications.**
+**Pure TypeScript memory system for AI agents — a full port of [PowerMem](https://github.com/oceanbase/powermem).**
 
-[![npm version](https://img.shields.io/npm/v/powermem-ts)](https://www.npmjs.com/package/powermem-ts)
 [![Node.js 18+](https://img.shields.io/badge/node-18+-green.svg)](https://nodejs.org/)
 [![License Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-PowerMem combines vector, full-text, and graph retrieval with LLM-driven memory extraction and Ebbinghaus-style time decay. This package provides a TypeScript/Node.js SDK that manages the Python-based PowerMem server automatically — zero manual setup required.
+PowerMem combines vector-based semantic search with LLM-driven intelligent memory extraction, Ebbinghaus time-decay, and multi-tenant isolation. This package is a complete TypeScript reimplementation — **zero Python dependency**.
 
 ## Features
 
-- **Zero-config server management** — automatically installs Python environment, creates virtualenv, and starts `powermem-server` as a subprocess
-- **Direct connect mode** — connect to an existing PowerMem server without spawning a subprocess
-- **Full API coverage** — add, search, get, update, delete, batch add, and more
-- **Type-safe** — complete TypeScript type definitions with strict mode
-- **Dual format** — ships both ESM and CommonJS builds
+- **Pure TypeScript** — no Python, no subprocess, no server needed
+- **Dual storage backend** — SQLite (default) or SeekDB (HNSW-indexed, OceanBase compatible)
+- **LLM-driven intelligent add** — extracts facts, deduplicates, merges with existing memories
+- **Semantic search** — cosine similarity over real embedding vectors
+- **Pluggable providers** — any LangChain.js embedding/LLM provider (OpenAI, Qwen, Ollama, Anthropic, etc.)
+- **Multi-tenant** — userId/agentId/runId isolation on all operations
+- **CLI** — `pmem` command for memory CRUD, stats, backup/restore, interactive shell
+- **Dashboard** — Express-based web dashboard with stats, charts, memory management
+- **Agent memory** — scope/permission/collaboration management for multi-agent systems
+- **User profiles** — profile extraction, profile-aware search, query rewriting
+- **Ebbinghaus decay** — time-based memory score adjustment with access reinforcement
+- **504 tests** — unit, integration, regression, e2e (Ollama), SeekDB (macOS + Linux), BDD
 
-## Quick start
-
-### Install
+## Quick Start
 
 ```bash
 npm install powermem-ts
 ```
 
-### Configure
-
-Copy `.env.example` to `.env` and fill in your LLM and Embedding API keys:
-
-```bash
-cp .env.example .env
-```
-
-Required fields in `.env`:
+### Simplest usage (env vars)
 
 ```env
-# Database (default: embedded OceanBase via SeekDB, no extra setup needed)
-DATABASE_PROVIDER=oceanbase
-OCEANBASE_HOST=
-OCEANBASE_PATH=./seekdb_data
-
-# LLM (required)
-LLM_PROVIDER=qwen
-LLM_API_KEY=your_api_key_here
-LLM_MODEL=qwen-plus
-
-# Embedding (required)
-EMBEDDING_PROVIDER=qwen
-EMBEDDING_API_KEY=your_api_key_here
-EMBEDDING_MODEL=text-embedding-v4
-EMBEDDING_DIMS=1536
+# .env
+EMBEDDING_PROVIDER=openai
+EMBEDDING_API_KEY=sk-...
+EMBEDDING_MODEL=text-embedding-3-small
+LLM_PROVIDER=openai
+LLM_API_KEY=sk-...
+LLM_MODEL=gpt-4o-mini
 ```
-
-See [.env.example](.env.example) for all available options. Supported LLM providers: `qwen`, `openai`, `siliconflow`, `ollama`, `vllm`, `anthropic`, `deepseek`. Supported embedding providers: `qwen`, `openai`, `siliconflow`, `huggingface`, `ollama`.
-
-### Prerequisites
-
-- **Node.js** >= 18.0.0
-- **Python** >= 3.11 (used internally to run the PowerMem server)
-
-### Usage
 
 ```typescript
 import { Memory } from 'powermem-ts';
 
-// One-time init: installs Python env + powermem package (idempotent)
-await Memory.init();
+const memory = await Memory.create(); // reads from .env
 
-// Or specify a version:
-// await Memory.init({ powermemVersion: 'powermem==1.0.0' });
+await memory.add('User likes coffee', { userId: 'user1' });
+const results = await memory.search('preferences', { userId: 'user1' });
+console.log(results.results);
 
-// Create instance (auto-starts the server)
-const memory = await Memory.create();
-
-// Add a memory
-const result = await memory.add('User likes coffee', { userId: 'user123' });
-console.log('Added:', result.memories);
-
-// Semantic search
-const hits = await memory.search('user preferences', { userId: 'user123', limit: 5 });
-console.log('Results:', hits.results);
-
-// List all memories
-const all = await memory.getAll({ userId: 'user123' });
-console.log('Total:', all.total);
-
-// Clean up (stops the server subprocess)
 await memory.close();
 ```
 
-### Connect to an existing server
-
-If you already have a PowerMem server running (e.g. via `powermem-server` or Docker), skip the auto-start and connect directly:
+### Explicit LangChain instances
 
 ```typescript
 import { Memory } from 'powermem-ts';
+import { OpenAIEmbeddings, ChatOpenAI } from '@langchain/openai';
 
 const memory = await Memory.create({
-  serverUrl: 'http://127.0.0.1:19527',
-  apiKey: process.env.POWERMEM_API_KEY,  // optional
+  embeddings: new OpenAIEmbeddings({ model: 'text-embedding-3-small' }),
+  llm: new ChatOpenAI({ model: 'gpt-4o-mini' }),
 });
+```
 
-await memory.add('Direct connect mode test');
-await memory.close();
+### SeekDB backend (HNSW-indexed)
+
+```typescript
+const memory = await Memory.create({
+  embeddings: myEmbeddings,
+  seekdb: { path: './seekdb_data', dimension: 1536 },
+});
+```
+
+### Connect to existing PowerMem server
+
+```typescript
+const memory = await Memory.create({
+  serverUrl: 'http://127.0.0.1:19527',
+});
+```
+
+## CLI
+
+```bash
+npx pmem memory add "User likes coffee" --user-id user1
+npx pmem memory search "preferences" --user-id user1
+npx pmem memory list --user-id user1 --sort created_at --order desc
+npx pmem stats --json
+npx pmem config show
+npx pmem manage backup --output backup.json
+npx pmem shell  # Interactive REPL
 ```
 
 ## API
 
-### `Memory.init(options?)`
-
-One-time setup. Creates a Python virtualenv at `~/.powermem/venv/` and installs the `powermem` package. Idempotent — skips if already installed.
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `homeDir` | `string` | `~/.powermem/` | PowerMem home directory |
-| `pythonPath` | `string` | `python3` / `python` | Path to Python 3.11+ |
-| `powermemVersion` | `string` | `powermem` | pip package specifier |
-| `pipArgs` | `string[]` | `[]` | Extra arguments for `pip install` |
-| `verbose` | `boolean` | `true` | Print progress logs |
-
-### `Memory.create(options?)`
-
-Creates a `Memory` instance. Automatically starts the server if no `serverUrl` is provided.
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `serverUrl` | `string` | — | Connect to existing server (skips auto-start) |
-| `apiKey` | `string` | — | API key for authentication |
-| `envFile` | `string` | `.env` | Path to `.env` file |
-| `port` | `number` | `19527` | Server port |
-| `startupTimeout` | `number` | `30000` | Max wait time (ms) for server startup |
-| `init` | `InitOptions` | — | Options passed to `Memory.init()` |
-
-### Instance methods
+### Memory facade
 
 | Method | Description |
 |--------|-------------|
-| `add(content, options?)` | Add a memory. Options: `userId`, `agentId`, `runId`, `metadata`, `filters`, `infer` |
-| `search(query, options?)` | Semantic search. Options: `userId`, `agentId`, `runId`, `filters`, `limit` |
-| `get(memoryId)` | Get a single memory by ID. Returns `null` if not found |
-| `update(memoryId, content, options?)` | Update memory content and/or metadata |
-| `delete(memoryId)` | Delete a single memory |
-| `getAll(options?)` | List memories. Options: `userId`, `agentId`, `limit`, `offset` |
-| `addBatch(memories, options?)` | Batch add multiple memories |
-| `deleteAll(options?)` | Delete all memories matching filter |
-| `reset()` | Delete all memories |
-| `close()` | Close the connection and stop the server subprocess |
+| `Memory.create(options?)` | Create instance (NativeProvider default, HttpProvider with serverUrl) |
+| `add(content, options?)` | Add memory (optional LLM fact extraction with `infer: true`) |
+| `search(query, options?)` | Semantic search with scores, threshold, limit |
+| `get(id)` | Get by ID |
+| `update(id, content)` | Update content (auto re-embeds) |
+| `delete(id)` | Delete by ID |
+| `getAll(options?)` | List with pagination, sorting, filtering |
+| `count(options?)` | Count with optional filters |
+| `addBatch(items, options?)` | Batch add |
+| `deleteAll(options?)` | Bulk delete with filters |
+| `reset()` | Clear all |
+| `close()` | Release resources |
 
-## Docs
+### Configuration
 
-- [Architecture](docs/architecture.md) — design, project structure, flows, and error handling
+| Option | Description |
+|--------|-------------|
+| `embeddings` | LangChain Embeddings instance |
+| `llm` | LangChain BaseChatModel instance |
+| `dbPath` | SQLite file path (default: `~/.powermem/memories.db`) |
+| `seekdb` | SeekDB config: `{ path, database?, dimension?, distance? }` |
+| `serverUrl` | Connect to existing server (HttpProvider mode) |
+| `customFactExtractionPrompt` | Override LLM fact extraction prompt |
+| `customUpdateMemoryPrompt` | Override LLM action decision prompt |
+| `fallbackToSimpleAdd` | Fall back to simple add when LLM extracts nothing |
+| `reranker` | Async function to re-score search results |
+| `enableDecay` | Enable Ebbinghaus time-based score decay |
+| `decayWeight` | Decay influence weight (0-1, default 0.3) |
+
+## Architecture
+
+```
+src/
+├── core/           Memory facade, NativeProvider, HttpProvider, Inferrer
+├── storage/        VectorStore interface, SQLiteStore, SeekDBStore, factory, adapter
+├── integrations/   Embeddings, LLM, Rerank — base interfaces + factories
+├── intelligence/   Ebbinghaus decay, MemoryOptimizer, ImportanceEvaluator
+├── prompts/        All LLM prompt templates (fact extraction, update, importance, graph)
+├── utils/          Cosine search, Snowflake IDs, filter parser, stats, IO
+├── cli/            Commander.js CLI (config, memory, stats, manage, shell)
+├── dashboard/      Express server + HTML dashboard
+├── agent/          AgentMemory, scope/permission/collaboration management
+└── user-memory/    UserMemory, query rewrite, SQLite profile storage
+```
+
+89 source files, 40 test files. See [docs/architecture.md](docs/architecture.md) for details.
+
+## Testing
+
+```bash
+npm test          # 370 unit/integration/regression tests
+npm run test:e2e  # 21 e2e tests (requires Ollama + nomic-embed-text + qwen2.5:0.5b)
+npm run test:seekdb # 63 SeekDB tests (requires @seekdb/js-bindings)
+npx vitest run tests/bdd/  # 50 BDD tests (CLI + dashboard UI)
+```
+
+CI runs 7 jobs: Node 18/20/22 unit tests, SeekDB on macOS ARM64, SeekDB on Linux x64, build verification, e2e with Ollama.
+
+## Dependencies
+
+**Runtime**: `better-sqlite3`, `@langchain/core`, `commander`, `express`, `zod`, `dotenv`
+
+**Peer (install what you need)**: `@langchain/openai`, `@langchain/anthropic`, `@langchain/ollama`, `seekdb`
 
 ## Related
 
-- [PowerMem](https://github.com/oceanbase/powermem) — the core Python project (SDK, CLI, HTTP API, MCP Server)
-- [PowerMem Documentation](https://github.com/oceanbase/powermem/tree/main/docs) — architecture, configuration, and guides
+- [PowerMem](https://github.com/oceanbase/powermem) — Original Python implementation
+- [SeekDB](https://github.com/oceanbase/seekdb-js) — OceanBase embedded vector database
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0

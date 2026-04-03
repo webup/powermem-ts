@@ -353,3 +353,97 @@ Scenario: Language switcher changes language
   When I switch language to "中文"
   Then all UI labels change to Chinese
 ```
+
+---
+
+## Data Correctness Scenarios
+
+### Feature: API Write → API Read Round-Trip
+```gherkin
+Scenario: Content, userId, metadata survive round-trip
+  When I POST a memory with content "User likes dark roast coffee" and userId "verify-user-1"
+  Then the returned memory has the exact same content and userId
+  And listing memories for that user returns the same memory
+
+Scenario: Search returns correct memory with score
+  Given a memory "Alice works at Google as a software engineer" exists
+  When I search for "software engineer Google"
+  Then the top result contains "Google" and "engineer"
+  And the score is between 0 and 1
+
+Scenario: Delete removes memory permanently
+  Given a memory exists with known ID
+  When I DELETE that memory
+  Then listing memories no longer includes that ID
+
+Scenario: Stats reflect accurate counts
+  Given 3 memories exist for a user
+  When I GET stats for that user
+  Then totalMemories equals 3
+```
+
+### Feature: API Write → Dashboard Displays Correctly
+```gherkin
+Scenario: Memory added via API appears in dashboard
+  Given I POST a memory via the REST API
+  When I navigate to the dashboard memories page
+  Then the memory content and userId are visible in the table
+
+Scenario: Stats cards show non-zero total
+  Given memories exist in the database
+  When I view the dashboard overview
+  Then the "Total Memories" card shows a number > 0
+
+Scenario: Growth trend shows today
+  Given memories were added today
+  When I view the dashboard overview
+  Then the growth trend chart includes today's date
+```
+
+### Feature: User Isolation
+```gherkin
+Scenario: User A data not visible to user B
+  Given memories exist for user A and user B
+  When I list memories for user A
+  Then only user A's memories appear
+  And user B's content is not present
+
+Scenario: Search isolation
+  Given both users have memories with keyword "XYZ"
+  When I search for "XYZ" as user A
+  Then only user A's memory is returned
+
+Scenario: Stats isolation
+  Given 2 memories for user A and 1 for user B
+  When I GET stats for user A
+  Then totalMemories equals 2
+```
+
+### Feature: Data Type Fidelity
+```gherkin
+Scenario: Chinese content survives round-trip
+  When I POST content "用户喜欢喝咖啡，住在上海浦东新区"
+  Then GET returns the exact same string
+
+Scenario: Emoji content survives round-trip
+  When I POST content "I love 🐱 cats and ☕ coffee! 🎉🚀"
+  Then GET returns the exact same string
+
+Scenario: Special characters survive round-trip
+  When I POST content with newlines, tabs, quotes, and HTML entities
+  Then GET returns the exact same string
+
+Scenario: Long content (500 chars) survives round-trip
+  When I POST 500 characters of repeated text
+  Then GET returns content with length 500+
+```
+
+### Feature: Pagination Correctness
+```gherkin
+Scenario: Pages have no ID overlap
+  Given 5 memories exist for a user
+  When I GET page 1 (limit=2, offset=0) and page 2 (limit=2, offset=2)
+  Then page 1 has 2 items and page 2 has 2 items
+  And total is 5
+  And no IDs appear in both pages
+```
