@@ -33,10 +33,10 @@ jobs:
       - name: Unit tests
         run: npm test
 
-  # ─── SeekDB tests (macOS where native bindings are bundled) ──────────
+  # ─── SeekDB tests (macOS ARM64 — native bindings are darwin-arm64) ────
   test-seekdb:
-    name: SeekDB (macOS)
-    runs-on: macos-latest
+    name: SeekDB (macOS ARM64)
+    runs-on: macos-14
 
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +47,16 @@ jobs:
 
       - name: Install dependencies
         run: npm install
+
+      - name: Verify SeekDB bindings
+        run: |
+          node -e "
+            const path = require('path');
+            const binding = path.join(require.resolve('@seekdb/js-bindings'), '..', 'seekdb.node');
+            const fs = require('fs');
+            console.log('Binding exists:', fs.existsSync(binding));
+            console.log('Platform:', process.platform, process.arch);
+          "
 
       - name: Run SeekDB tests
         run: npm run test:seekdb
