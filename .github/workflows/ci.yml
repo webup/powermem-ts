@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  # ─── Unit + SeekDB tests across Node versions ────────────────────────
+  # ─── Unit + Integration + Regression tests ───────────────────────────
   test:
     name: Test (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
@@ -33,9 +33,120 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: SeekDB tests (auto-skip if bindings unavailable)
-        run: npx vitest run tests/seekdb-store.test.ts tests/seekdb-integration.test.ts
-        continue-on-error: true
+  # ─── SeekDB tests (macOS ARM64 — bindings bundled as darwin-arm64) ───
+  test-seekdb:
+    name: SeekDB (macOS ARM64)
+    runs-on: macos-14
+    env:
+      # Propagate library path to ALL steps including vitest subprocesses
+      DYLD_LIBRARY_PATH: ${{ github.workspace }}/node_modules/@seekdb/js-bindings:${{ github.workspace }}/node_modules/@seekdb/js-bindings/libs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Verify SeekDB native binding loads
+        run: |
+          echo "DYLD_LIBRARY_PATH=$DYLD_LIBRARY_PATH"
+          node -e "
+            const seekdb = require('@seekdb/js-bindings');
+            seekdb.getNativeBindingAsync().then(b => {
+              console.log('SeekDB binding loaded OK');
+            }).catch(e => {
+              console.error('FAILED:', e.message);
+              process.exit(1);
+            });
+          "
+
+      - name: Run SeekDB tests
+        run: npm run test:seekdb
+        timeout-minutes: 5
+
+  # ─── SeekDB tests (Linux x64 — download bindings + install libaio) ──
+  test-seekdb-linux:
+    name: SeekDB (Linux x64)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y libaio1t64 || sudo apt-get install -y libaio1 || true
+          # Ubuntu 24.04 ships libaio.so.1t64 but SeekDB expects libaio.so.1
+          if [ ! -f /usr/lib/x86_64-linux-gnu/libaio.so.1 ] && [ -f /usr/lib/x86_64-linux-gnu/libaio.so.1t64 ]; then
+            sudo ln -s libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1
+            echo "Created libaio.so.1 symlink"
+          fi
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Download SeekDB native bindings
+        run: |
+          node -e "
+            // Use filesystem path to bypass package.json exports restriction
+            const downloadPath = require.resolve('@seekdb/js-bindings').replace('seekdb.js', 'download.js');
+            const { ensureBindingsDownloaded } = require(downloadPath);
+            ensureBindingsDownloaded().then(dir => {
+              console.log('Downloaded to:', dir);
+              const fs = require('fs');
+              const path = require('path');
+              // Verify libseekdb.so was extracted (download.js extractAllTo should handle this)
+              const soPath = path.join(dir, 'libseekdb.so');
+              if (!fs.existsSync(soPath)) {
+                console.log('libseekdb.so not found, extracting from zip...');
+                const zipPath = path.join(dir, 'seekdb-js-bindings-linux-x64.zip');
+                if (fs.existsSync(zipPath)) {
+                  const AdmZip = require('adm-zip');
+                  const zip = new AdmZip(zipPath);
+                  zip.extractEntryTo('libseekdb.so', dir, false, true);
+                  console.log('Extracted libseekdb.so');
+                }
+              }
+              const files = fs.readdirSync(dir).filter(f => f.endsWith('.so') || f.endsWith('.node'));
+              console.log('Native files:', files);
+              if (!files.includes('seekdb.node')) { console.error('seekdb.node missing!'); process.exit(1); }
+              if (!files.includes('libseekdb.so')) { console.error('libseekdb.so missing!'); process.exit(1); }
+            }).catch(e => {
+              console.error('Download failed:', e.message);
+              process.exit(1);
+            });
+          "
+
+      - name: Verify SeekDB binding loads
+        run: |
+          # Find the cache dir dynamically (contains seekdb.node + libseekdb.so)
+          CACHE_DIR=$(find ~/.seekdb -name 'seekdb.node' -exec dirname {} \; 2>/dev/null | head -1)
+          echo "Cache dir: $CACHE_DIR"
+          ls -la "$CACHE_DIR"/*.so "$CACHE_DIR"/*.node 2>/dev/null || true
+          export LD_LIBRARY_PATH="$CACHE_DIR:$LD_LIBRARY_PATH"
+          node -e "
+            const seekdb = require('@seekdb/js-bindings');
+            seekdb.getNativeBindingAsync().then(b => {
+              console.log('SeekDB binding loaded OK');
+            }).catch(e => {
+              console.error('FAILED:', e.message);
+              process.exit(1);
+            });
+          "
+
+      - name: Run SeekDB tests
+        run: |
+          CACHE_DIR=$(find ~/.seekdb -name 'seekdb.node' -exec dirname {} \; 2>/dev/null | head -1)
+          export LD_LIBRARY_PATH="$CACHE_DIR:$LD_LIBRARY_PATH"
+          npm run test:seekdb
+        timeout-minutes: 5
 
   # ─── Build verification ──────────────────────────────────────────────
   build:
