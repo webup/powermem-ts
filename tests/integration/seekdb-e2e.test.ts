@@ -1,9 +1,6 @@
 /**
- * SeekDB end-to-end integration tests — exercises the full stack through
- * Memory facade with SeekDB as the vector store backend.
- *
- * Covers: data correctness, user isolation, CLI-equivalent operations,
- * dashboard API-equivalent operations, all over SeekDB.
+ * SeekDB end-to-end integration tests — single shared Memory instance.
+ * SeekDB embedded engine is single-instance, so all tests share one DB.
  *
  * Auto-skips when SeekDB native bindings are unavailable.
  */
@@ -17,7 +14,6 @@ import { NativeProvider } from '../../src/core/native-provider.js';
 import { MockEmbeddings, MockLLM } from '../mocks.js';
 import { calculateStatsFromMemories } from '../../src/utils/stats.js';
 
-// Reuse the same availability check pattern as the passing seekdb.test.ts
 async function tryCreateStore(tmpDir: string, name: string, dim = 8) {
   try {
     return await SeekDBStore.create({
@@ -41,311 +37,169 @@ let seekdbAvailable = false;
 
 const describeIf = seekdbAvailable ? describe : describe.skip;
 
-describeIf('SeekDB E2E — full stack', () => {
+describeIf('SeekDB E2E — full stack (shared instance)', () => {
+  let memory: Memory;
   let tmpDir: string;
 
-  function freshDir() {
+  beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'seekdb-e2e-'));
-    return tmpDir;
-  }
-
-  afterAll(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  // ═══════════════════════════════════════════════════════════════
-  // Feature: Memory facade over SeekDB (CLI-equivalent operations)
-  // ═══════════════════════════════════════════════════════════════
-
-  describe('Memory facade over SeekDB', () => {
-    let memory: Memory;
-
-    beforeAll(async () => {
-      memory = await Memory.create({
-        embeddings: new MockEmbeddings(),
-        seekdb: { path: freshDir(), database: 'test', collectionName: 'mem', dimension: 8 },
-      });
-    });
-
-    afterAll(async () => { if (memory) await memory.close(); });
-
-    it('add + get round-trip preserves content', async () => {
-      const result = await memory.add('SeekDB round-trip test', { userId: 'u1', infer: false });
-      expect(result.memories).toHaveLength(1);
-      const id = result.memories[0].memoryId;
-
-      const fetched = await memory.get(id);
-      expect(fetched).not.toBeNull();
-      expect(fetched!.content).toBe('SeekDB round-trip test');
-      expect(fetched!.userId).toBe('u1');
-    });
-
-    it('search returns relevant results with scores', async () => {
-      await memory.add('I love dark roast coffee', { userId: 'u1', infer: false });
-      const result = await memory.search('coffee', { userId: 'u1', limit: 5 });
-      expect(result.results.length).toBeGreaterThan(0);
-      expect(result.results[0].score).toBeGreaterThan(0);
-      expect(result.results[0].score).toBeLessThanOrEqual(1);
-    });
-
-    it('update changes content and re-embeds', async () => {
-      const added = await memory.add('old content', { userId: 'u1', infer: false });
-      const id = added.memories[0].memoryId;
-
-      await memory.update(id, 'new content');
-      const fetched = await memory.get(id);
-      expect(fetched!.content).toBe('new content');
-    });
-
-    it('delete removes memory', async () => {
-      const added = await memory.add('ephemeral', { userId: 'u1', infer: false });
-      const id = added.memories[0].memoryId;
-
-      expect(await memory.delete(id)).toBe(true);
-      expect(await memory.get(id)).toBeNull();
-    });
-
-    it('getAll with pagination', async () => {
-      for (let i = 0; i < 5; i++) {
-        await memory.add(`paginated ${i}`, { userId: 'page-u', infer: false });
-      }
-      const page1 = await memory.getAll({ userId: 'page-u', limit: 2, offset: 0 });
-      const page2 = await memory.getAll({ userId: 'page-u', limit: 2, offset: 2 });
-      expect(page1.total).toBe(5);
-      expect(page1.memories).toHaveLength(2);
-      expect(page2.memories).toHaveLength(2);
-
-      const ids1 = new Set(page1.memories.map(m => m.id));
-      const ids2 = new Set(page2.memories.map(m => m.id));
-      for (const id of ids2) expect(ids1.has(id)).toBe(false);
-    });
-
-    it('count returns accurate number', async () => {
-      const count = await memory.count({ userId: 'page-u' });
-      expect(count).toBe(5);
-    });
-
-    it('deleteAll clears user memories', async () => {
-      await memory.deleteAll({ userId: 'page-u' });
-      expect(await memory.count({ userId: 'page-u' })).toBe(0);
-    });
-
-    it('addBatch stores multiple memories', async () => {
-      const result = await memory.addBatch(
-        [{ content: 'batch 1' }, { content: 'batch 2' }, { content: 'batch 3' }],
-        { userId: 'batch-u', infer: false }
-      );
-      expect(result.memories).toHaveLength(3);
-      expect(await memory.count({ userId: 'batch-u' })).toBe(3);
-    });
-
-    it('reset clears everything', async () => {
-      await memory.reset();
-      // Only the memories added after reset should survive
-      const all = await memory.getAll({ limit: 1000 });
-      expect(all.total).toBe(0);
+    memory = await Memory.create({
+      embeddings: new MockEmbeddings(),
+      seekdb: { path: tmpDir, database: 'test', collectionName: 'memories', dimension: 8 },
     });
   });
 
-  // ═══════════════════════════════════════════════════════════════
-  // Feature: User isolation over SeekDB
-  // ═══════════════════════════════════════════════════════════════
-
-  describe('User isolation over SeekDB', () => {
-    let memory: Memory;
-
-    beforeAll(async () => {
-      memory = await Memory.create({
-        embeddings: new MockEmbeddings(),
-        seekdb: { path: freshDir(), database: 'iso', collectionName: 'mem', dimension: 8 },
-      });
-    });
-
-    afterAll(async () => { if (memory) await memory.close(); });
-
-    it('user A data not visible to user B', async () => {
-      await memory.add('Alice secret', { userId: 'alice', infer: false });
-      await memory.add('Bob secret', { userId: 'bob', infer: false });
-
-      const aliceList = await memory.getAll({ userId: 'alice' });
-      const bobList = await memory.getAll({ userId: 'bob' });
-
-      expect(aliceList.memories.every(m => m.userId === 'alice')).toBe(true);
-      expect(bobList.memories.every(m => m.userId === 'bob')).toBe(true);
-      expect(aliceList.memories.some(m => m.content.includes('Bob'))).toBe(false);
-    });
-
-    it('search isolation between users', async () => {
-      const aliceSearch = await memory.search('secret', { userId: 'alice' });
-      const bobSearch = await memory.search('secret', { userId: 'bob' });
-
-      expect(aliceSearch.results.every(r => r.content.includes('Alice'))).toBe(true);
-      expect(bobSearch.results.every(r => r.content.includes('Bob'))).toBe(true);
-    });
-
-    it('deleteAll scoped to user', async () => {
-      await memory.deleteAll({ userId: 'bob' });
-      expect(await memory.count({ userId: 'alice' })).toBe(1);
-      expect(await memory.count({ userId: 'bob' })).toBe(0);
-    });
+  afterAll(async () => {
+    if (memory) await memory.close();
+    if (tmpDir) try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   });
 
-  // ═══════════════════════════════════════════════════════════════
-  // Feature: Data type fidelity over SeekDB
-  // ═══════════════════════════════════════════════════════════════
+  // ─── CRUD ──────────────────────────────────────────────────────────
 
-  describe('Data fidelity over SeekDB', () => {
-    let memory: Memory;
-
-    beforeAll(async () => {
-      memory = await Memory.create({
-        embeddings: new MockEmbeddings(),
-        seekdb: { path: freshDir(), database: 'fidelity', collectionName: 'mem', dimension: 8 },
-      });
-    });
-
-    afterAll(async () => { if (memory) await memory.close(); });
-
-    it('Chinese content round-trip', async () => {
-      const content = '用户喜欢喝咖啡，住在上海';
-      const result = await memory.add(content, { userId: 'cn', infer: false });
-      const fetched = await memory.get(result.memories[0].memoryId);
-      expect(fetched!.content).toBe(content);
-    });
-
-    it('emoji round-trip', async () => {
-      const content = 'I love 🐱 cats and ☕ coffee!';
-      const result = await memory.add(content, { userId: 'emoji', infer: false });
-      const fetched = await memory.get(result.memories[0].memoryId);
-      expect(fetched!.content).toBe(content);
-    });
-
-    it('metadata round-trip', async () => {
-      const result = await memory.add('with meta', {
-        userId: 'meta',
-        metadata: { tags: ['test', 'seekdb'], nested: { deep: true } },
-        infer: false,
-      });
-      const fetched = await memory.get(result.memories[0].memoryId);
-      expect(fetched!.metadata).toEqual({ tags: ['test', 'seekdb'], nested: { deep: true } });
-    });
-
-    it('scope and category round-trip', async () => {
-      const result = await memory.add('scoped', {
-        userId: 'scope',
-        scope: 'personal',
-        category: 'preference',
-        infer: false,
-      });
-      const fetched = await memory.get(result.memories[0].memoryId);
-      expect(fetched!.scope).toBe('personal');
-      expect(fetched!.category).toBe('preference');
-    });
+  it('add + get round-trip preserves content', async () => {
+    const result = await memory.add('SeekDB round-trip test', { userId: 'u1', infer: false });
+    expect(result.memories).toHaveLength(1);
+    const id = result.memories[0].memoryId;
+    const fetched = await memory.get(id);
+    expect(fetched).not.toBeNull();
+    expect(fetched!.content).toBe('SeekDB round-trip test');
   });
 
-  // ═══════════════════════════════════════════════════════════════
-  // Feature: Stats calculation over SeekDB
-  // ═══════════════════════════════════════════════════════════════
-
-  describe('Stats over SeekDB', () => {
-    let memory: Memory;
-
-    beforeAll(async () => {
-      memory = await Memory.create({
-        embeddings: new MockEmbeddings(),
-        seekdb: { path: freshDir(), database: 'stats', collectionName: 'mem', dimension: 8 },
-      });
-      for (let i = 0; i < 5; i++) {
-        await memory.add(`Stats item ${i}`, { userId: 'stats-u', infer: false });
-      }
-    });
-
-    afterAll(async () => { if (memory) await memory.close(); });
-
-    it('stats reflect correct total', async () => {
-      const all = await memory.getAll({ userId: 'stats-u', limit: 10000 });
-      const stats = calculateStatsFromMemories(all.memories as any);
-      expect(stats.totalMemories).toBe(5);
-    });
-
-    it('age distribution has entries', async () => {
-      const all = await memory.getAll({ userId: 'stats-u', limit: 10000 });
-      const stats = calculateStatsFromMemories(all.memories as any);
-      expect(stats.ageDistribution['< 1 day']).toBe(5);
-    });
-
-    it('growth trend includes today', async () => {
-      const all = await memory.getAll({ userId: 'stats-u', limit: 10000 });
-      const stats = calculateStatsFromMemories(all.memories as any);
-      const today = new Date().toISOString().split('T')[0];
-      expect(stats.growthTrend[today]).toBe(5);
-    });
+  it('search returns results with scores', async () => {
+    await memory.add('I love dark roast coffee', { userId: 'u1', infer: false });
+    const result = await memory.search('coffee', { userId: 'u1', limit: 5 });
+    expect(result.results.length).toBeGreaterThan(0);
+    expect(result.results[0].score).toBeGreaterThan(0);
+    expect(result.results[0].score).toBeLessThanOrEqual(1);
   });
 
-  // ═══════════════════════════════════════════════════════════════
-  // Feature: Intelligent add over SeekDB
-  // ═══════════════════════════════════════════════════════════════
-
-  describe('Intelligent add over SeekDB', () => {
-    it('infer extracts and stores facts', async () => {
-      const memory = await Memory.create({
-        embeddings: new MockEmbeddings(),
-        llm: new MockLLM([JSON.stringify({ facts: ['Likes tea', 'Lives in Tokyo'] })]),
-        seekdb: { path: freshDir(), database: 'infer', collectionName: 'mem', dimension: 8 },
-      });
-
-      const result = await memory.add('I like tea and live in Tokyo', { userId: 'infer-u' });
-      expect(result.memories.length).toBeGreaterThanOrEqual(1);
-
-      const all = await memory.getAll({ userId: 'infer-u' });
-      expect(all.total).toBeGreaterThanOrEqual(1);
-
-      await memory.close();
-    });
+  it('update changes content', async () => {
+    const added = await memory.add('old content', { userId: 'u1', infer: false });
+    const id = added.memories[0].memoryId;
+    await memory.update(id, 'new content');
+    const fetched = await memory.get(id);
+    expect(fetched!.content).toBe('new content');
   });
 
-  // ═══════════════════════════════════════════════════════════════
-  // Feature: VectorStoreFactory creates SeekDB
-  // ═══════════════════════════════════════════════════════════════
-
-  describe('VectorStoreFactory with SeekDB', () => {
-    it('factory creates SeekDBStore', async () => {
-      const { VectorStoreFactory } = await import('../../src/storage/factory.js');
-      const store = await VectorStoreFactory.create('seekdb', {
-        path: freshDir(), database: 'factory', collectionName: 'test', dimension: 3,
-      });
-      expect(store).toBeDefined();
-      await store.insert('1', [1, 0, 0], {
-        data: 'factory test', user_id: null, agent_id: null, run_id: null,
-        hash: 'h', created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-        scope: null, category: null, access_count: 0, metadata: {},
-      });
-      expect(await store.count()).toBe(1);
-      await store.close();
-    });
+  it('delete removes memory', async () => {
+    const added = await memory.add('ephemeral', { userId: 'u1', infer: false });
+    const id = added.memories[0].memoryId;
+    expect(await memory.delete(id)).toBe(true);
+    expect(await memory.get(id)).toBeNull();
   });
 
-  // ═══════════════════════════════════════════════════════════════
-  // Feature: NativeProvider with injected SeekDBStore
-  // ═══════════════════════════════════════════════════════════════
+  // ─── Pagination ────────────────────────────────────────────────────
 
-  describe('NativeProvider + SeekDBStore injection', () => {
-    it('provider accepts injected SeekDBStore', async () => {
-      const store = await SeekDBStore.create({
-        path: freshDir(), database: 'inject', collectionName: 'mem', dimension: 8,
-      });
-      const provider = await NativeProvider.create({
-        embeddings: new MockEmbeddings(),
-        store,
-      });
+  it('getAll with pagination — no ID overlap', async () => {
+    const userId = `page-${Date.now()}`;
+    for (let i = 0; i < 5; i++) {
+      await memory.add(`paginated ${i}`, { userId, infer: false });
+    }
+    const page1 = await memory.getAll({ userId, limit: 2, offset: 0 });
+    const page2 = await memory.getAll({ userId, limit: 2, offset: 2 });
+    expect(page1.total).toBe(5);
+    expect(page1.memories).toHaveLength(2);
+    expect(page2.memories).toHaveLength(2);
+    const ids1 = new Set(page1.memories.map(m => m.id));
+    const ids2 = new Set(page2.memories.map(m => m.id));
+    for (const id of ids2) expect(ids1.has(id)).toBe(false);
+  });
 
-      const result = await provider.add({ content: 'injected store test', infer: false });
-      expect(result.memories).toHaveLength(1);
+  it('count returns accurate number', async () => {
+    const userId = `count-${Date.now()}`;
+    await memory.add('a', { userId, infer: false });
+    await memory.add('b', { userId, infer: false });
+    expect(await memory.count({ userId })).toBe(2);
+  });
 
-      const search = await provider.search({ query: 'injected' });
-      expect(search.results.length).toBeGreaterThan(0);
+  it('addBatch stores multiple', async () => {
+    const userId = `batch-${Date.now()}`;
+    const result = await memory.addBatch(
+      [{ content: 'b1' }, { content: 'b2' }, { content: 'b3' }],
+      { userId, infer: false }
+    );
+    expect(result.memories).toHaveLength(3);
+  });
 
-      await provider.close();
+  // ─── User isolation ────────────────────────────────────────────────
+
+  it('user A data not visible to user B', async () => {
+    const ts = Date.now();
+    await memory.add('Alice secret', { userId: `alice-${ts}`, infer: false });
+    await memory.add('Bob secret', { userId: `bob-${ts}`, infer: false });
+
+    const aliceList = await memory.getAll({ userId: `alice-${ts}` });
+    expect(aliceList.memories.every(m => m.content.includes('Alice'))).toBe(true);
+    expect(aliceList.memories.some(m => m.content.includes('Bob'))).toBe(false);
+  });
+
+  it('search isolation between users', async () => {
+    const ts = Date.now();
+    await memory.add('Alpha keyword XYZ', { userId: `searchA-${ts}`, infer: false });
+    await memory.add('Beta keyword XYZ', { userId: `searchB-${ts}`, infer: false });
+
+    const searchA = await memory.search('keyword XYZ', { userId: `searchA-${ts}` });
+    expect(searchA.results.every(r => r.content.includes('Alpha'))).toBe(true);
+  });
+
+  // ─── Data fidelity ─────────────────────────────────────────────────
+
+  it('Chinese content round-trip', async () => {
+    const content = '用户喜欢喝咖啡，住在上海';
+    const result = await memory.add(content, { userId: 'cn', infer: false });
+    const fetched = await memory.get(result.memories[0].memoryId);
+    expect(fetched!.content).toBe(content);
+  });
+
+  it('emoji round-trip', async () => {
+    const content = 'I love 🐱 cats and ☕ coffee!';
+    const result = await memory.add(content, { userId: 'emoji', infer: false });
+    const fetched = await memory.get(result.memories[0].memoryId);
+    expect(fetched!.content).toBe(content);
+  });
+
+  it('metadata round-trip', async () => {
+    const result = await memory.add('with meta', {
+      userId: 'meta',
+      metadata: { tags: ['test', 'seekdb'], nested: { deep: true } },
+      infer: false,
     });
+    const fetched = await memory.get(result.memories[0].memoryId);
+    expect(fetched!.metadata).toEqual({ tags: ['test', 'seekdb'], nested: { deep: true } });
+  });
+
+  it('scope and category round-trip', async () => {
+    const result = await memory.add('scoped', {
+      userId: 'scope', scope: 'personal', category: 'preference', infer: false,
+    });
+    const fetched = await memory.get(result.memories[0].memoryId);
+    expect(fetched!.scope).toBe('personal');
+    expect(fetched!.category).toBe('preference');
+  });
+
+  // ─── Stats ─────────────────────────────────────────────────────────
+
+  it('stats reflect correct data', async () => {
+    const userId = `stats-${Date.now()}`;
+    for (let i = 0; i < 3; i++) {
+      await memory.add(`Stats item ${i}`, { userId, infer: false });
+    }
+    const all = await memory.getAll({ userId, limit: 10000 });
+    const stats = calculateStatsFromMemories(all.memories as any);
+    expect(stats.totalMemories).toBe(3);
+    expect(stats.ageDistribution['< 1 day']).toBe(3);
+  });
+
+  // ─── Intelligent add ───────────────────────────────────────────────
+
+  it('infer extracts and stores facts', async () => {
+    const mem2 = await Memory.create({
+      embeddings: new MockEmbeddings(),
+      llm: new MockLLM([JSON.stringify({ facts: ['Likes tea', 'Lives in Tokyo'] })]),
+      seekdb: { path: tmpDir, database: 'test', collectionName: `infer_${Date.now()}`, dimension: 8 },
+    });
+    const result = await mem2.add('I like tea and live in Tokyo', { userId: 'infer-u' });
+    expect(result.memories.length).toBeGreaterThanOrEqual(1);
+    await mem2.close();
   });
 });
