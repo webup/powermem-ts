@@ -67,7 +67,7 @@ describeIf('SeekDB E2E — full stack', () => {
       });
     });
 
-    afterAll(async () => { await memory.close(); });
+    afterAll(async () => { if (memory) await memory.close(); });
 
     it('add + get round-trip preserves content', async () => {
       const result = await memory.add('SeekDB round-trip test', { userId: 'u1', infer: false });
@@ -161,7 +161,7 @@ describeIf('SeekDB E2E — full stack', () => {
       });
     });
 
-    afterAll(async () => { await memory.close(); });
+    afterAll(async () => { if (memory) await memory.close(); });
 
     it('user A data not visible to user B', async () => {
       await memory.add('Alice secret', { userId: 'alice', infer: false });
@@ -204,7 +204,7 @@ describeIf('SeekDB E2E — full stack', () => {
       });
     });
 
-    afterAll(async () => { await memory.close(); });
+    afterAll(async () => { if (memory) await memory.close(); });
 
     it('Chinese content round-trip', async () => {
       const content = '用户喜欢喝咖啡，住在上海';
@@ -260,7 +260,7 @@ describeIf('SeekDB E2E — full stack', () => {
       }
     });
 
-    afterAll(async () => { await memory.close(); });
+    afterAll(async () => { if (memory) await memory.close(); });
 
     it('stats reflect correct total', async () => {
       const all = await memory.getAll({ userId: 'stats-u', limit: 10000 });
